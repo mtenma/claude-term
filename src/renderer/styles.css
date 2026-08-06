@@ -36,6 +36,26 @@ body {
   overflow: hidden;
 }
 
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- タイトルバー(transparent ウィンドウはフレームレスになるため自前で描く) ---- */
+
+#titlebar {
+  height: 38px;
+  flex-shrink: 0;
+  -webkit-app-region: drag; /* ウィンドウ移動のドラッグ領域 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-faint);
+  background: var(--panel-a);
+  border-bottom: 1px solid var(--border);
+}
+
 body.resizing {
   cursor: col-resize;
   user-select: none;
@@ -43,7 +63,8 @@ body.resizing {
 
 #app {
   display: flex;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
 }
 
 /* ---- メイン表示 ---- */
@@ -62,6 +83,12 @@ body.resizing {
 
 #term-host .xterm {
   height: 100%;
+}
+
+/* xterm.css の viewport は不透明黒がデフォルトで、テーマの透過背景も
+   反映されない。背景の描画は body(--bg-a)に一元化して常時透過にする */
+#term-host .xterm-viewport {
+  background-color: transparent !important;
 }
 
 /* ---- ターミナル内検索 ---- */

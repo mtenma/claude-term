@@ -82,6 +82,34 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
         if (buf.length < 10_000) throw new Error(`screenshot too small (${buf.length} bytes)`)
         fs.writeFileSync(out, buf)
         console.log(`[devshot] wrote ${out} (${buf.length} bytes)`)
+        // CLAUDE_TERM_PROBE=x,y;x,y … 指定座標(CSS px)の実ピクセルと、
+        // 透過に関わる DOM の計算済みスタイルを出力する(透過検証用)
+        if (process.env.CLAUDE_TERM_PROBE) {
+          const bmp = img.toBitmap() // BGRA
+          const size = img.getSize()
+          const [w] = win.getContentSize()
+          const scale = size.width / w
+          for (const pt of process.env.CLAUDE_TERM_PROBE.split(';')) {
+            const [x, y] = pt.split(',').map((n) => Math.round(Number(n) * scale))
+            const i = (y * size.width + x) * 4
+            console.log(
+              `[probe] css(${pt}) BGRA=${bmp[i]},${bmp[i + 1]},${bmp[i + 2]},${bmp[i + 3]}`,
+            )
+          }
+          const dom = (await win.webContents.executeJavaScript(`(() => {
+            const cs = (sel) => {
+              const n = document.querySelector(sel)
+              return n ? getComputedStyle(n).backgroundColor : null
+            }
+            return JSON.stringify({
+              body: cs('body'),
+              viewport: cs('.xterm-viewport'),
+              screen: cs('.xterm-screen'),
+              canvases: document.querySelectorAll('#term-host canvas').length,
+            })
+          })()`)) as string
+          console.log(`[probe-dom] ${dom}`)
+        }
       } catch (err) {
         console.error('[devshot] failed:', err)
         code = 1

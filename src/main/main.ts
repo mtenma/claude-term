@@ -112,9 +112,12 @@ async function createWindow(): Promise<WindowContext> {
     minHeight: 600,
     title: 'Claude Term',
     // 外観設定の「背景の透過」を有効にするため常に透過ウィンドウで作る
-    // (transparent は生成時のみ指定可能。不透明度は CSS 側で制御する)
+    // (transparent は生成時のみ指定可能。不透明度は CSS 側で制御する)。
+    // transparent はウィンドウをフレームレス化するため、hiddenInset で
+    // 信号機ボタンを残し、タイトルバーは renderer 側の帯(ドラッグ領域)で代替する
     transparent: true,
     backgroundColor: '#00000000',
+    titleBarStyle: 'hiddenInset',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),

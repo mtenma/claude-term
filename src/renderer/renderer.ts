@@ -91,7 +91,11 @@ function setWebglEnabled(on: boolean): void {
       webgl = null // WebGL が使えない環境では DOM レンダラーで続行
     }
   } else if (!on && webgl !== null) {
-    webgl.dispose()
+    try {
+      webgl.dispose()
+    } catch {
+      // dispose の失敗はレンダラー切替を妨げない
+    }
     webgl = null
   }
 }
@@ -238,15 +242,16 @@ function applyAppearance(a: AppearanceSettings): void {
   root.setProperty('--accent', a.accent)
   root.setProperty('--bg-pct', `${a.opacity}%`)
   const translucent = a.opacity < 100
-  // 透過時はターミナル自身の背景を消して body の半透明背景を透かす。
-  // WebGL レンダラーは透過背景に対応しないため DOM レンダラーへ切り替える
-  setWebglEnabled(!translucent)
+  // 透過時はターミナル自身の背景を消して body の半透明背景を透かす
   term.options.theme = {
     ...term.options.theme,
     background: translucent ? cssRgba(a.background, 0) : a.background,
     foreground: a.foreground,
     cursorAccent: a.background,
   }
+  // WebGL レンダラーは透過背景に対応しないため DOM レンダラーへ切り替える
+  // (テーマ適用の後に行い、切替の失敗が配色へ波及しないようにする)
+  setWebglEnabled(!translucent)
   setOpacity.value = String(a.opacity)
   setOpacityVal.textContent = `${a.opacity}%`
   setBg.value = a.background
