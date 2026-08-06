@@ -3,6 +3,8 @@ export type SessionState = 'running' | 'attention' | 'idle' | 'exited'
 export interface SessionInfo {
   id: string
   title: string
+  /** ツールチップ用の表示(ターミナル番号 + ~ 略記の作業ディレクトリ) */
+  cwd: string
   state: SessionState
   preview: string[]
 }

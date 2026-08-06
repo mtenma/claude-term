@@ -116,6 +116,7 @@ function buildCard(s: SessionInfo): HTMLElement {
   const title = document.createElement('span')
   title.className = 'card-title'
   title.textContent = s.title
+  title.title = s.cwd
 
   const state = document.createElement('span')
   state.className = `card-state ${s.state}`

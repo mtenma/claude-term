@@ -1,4 +1,6 @@
+import {execFile} from 'node:child_process'
 import * as os from 'node:os'
+import * as path from 'node:path'
 import {spawn, type IPty} from 'node-pty'
 import {Terminal} from '@xterm/headless'
 import {SerializeAddon} from '@xterm/addon-serialize'
@@ -9,6 +11,7 @@ const PREVIEW_SCAN_LIMIT = 200
 const ACTIVITY_WINDOW_MS = 2500
 const HOOK_RUNNING_STALE_MS = 60_000
 const TICK_MS = 700
+const CWD_POLL_MS = 2000
 const SCROLLBACK = 3000
 const SNAPSHOT_SCROLLBACK = 2000
 // フロー制御: renderer が未消化のバイト数(UTF-16 長)がこの閾値を超えたら PTY を止める
@@ -20,6 +23,7 @@ type HookState = 'running' | 'attention' | 'idle'
 interface Session {
   id: string
   index: number
+  cwd: string
   pty: IPty
   term: Terminal
   serialize: SerializeAddon
@@ -52,6 +56,12 @@ export class SessionManager {
 
   constructor(private hookPort: number) {
     setInterval(() => this.emitIfChanged(false), TICK_MS).unref()
+    // シェルの現在ディレクトリを追跡してカードタイトルに反映する
+    setInterval(() => {
+      for (const s of this.sessions.values()) {
+        if (!s.exited) this.refreshCwd(s)
+      }
+    }, CWD_POLL_MS).unref()
   }
 
   create(): SessionInfo {
@@ -93,6 +103,7 @@ export class SessionManager {
     const session: Session = {
       id,
       index,
+      cwd: os.homedir(),
       pty,
       term,
       serialize,
@@ -113,6 +124,18 @@ export class SessionManager {
     // OSC 9 (iTerm 系の通知シーケンス) も要注目として拾う
     term.parser.registerOscHandler(9, () => {
       if (this.activeId !== session.id) session.bellAt = Date.now()
+      return true
+    })
+    // OSC 7 (シェル統合の cwd 通知) があれば即時にタイトルへ反映
+    term.parser.registerOscHandler(7, (data) => {
+      try {
+        const u = new URL(data)
+        if (u.protocol === 'file:' && u.pathname) {
+          session.cwd = decodeURIComponent(u.pathname)
+        }
+      } catch {
+        // 不正な URL は無視
+      }
       return true
     })
     pty.onData((data) => this.handlePtyData(session, data))
@@ -342,10 +365,28 @@ export class SessionManager {
     return lines
   }
 
+  /** シェルプロセスの現在の作業ディレクトリを lsof で取得(macOS、失敗は無視) */
+  private refreshCwd(s: Session): void {
+    execFile(
+      '/usr/sbin/lsof',
+      ['-a', '-p', String(s.pty.pid), '-d', 'cwd', '-Fn'],
+      {timeout: 3000},
+      (err, stdout) => {
+        if (err || s.exited) return
+        const line = stdout.split('\n').find((l) => l.startsWith('n'))
+        if (line && line.length > 1) s.cwd = line.slice(1)
+      },
+    )
+  }
+
   private toInfo(s: Session): SessionInfo {
+    const home = os.homedir()
+    const title = s.cwd === home ? '~' : path.basename(s.cwd) || s.cwd
+    const abbrev = s.cwd.startsWith(home) ? `~${s.cwd.slice(home.length)}` : s.cwd
     return {
       id: s.id,
-      title: `ターミナル${s.index}`,
+      title,
+      cwd: `ターミナル${s.index} — ${abbrev}`,
       state: this.stateOf(s),
       preview: this.previewOf(s),
     }

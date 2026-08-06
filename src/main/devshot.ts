@@ -46,7 +46,7 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
         b.id,
         'sleep 1; curl -s -m 1 -X POST "http://127.0.0.1:$CLAUDE_TERM_PORT/state/$CLAUDE_TERM_SESSION/attention"\r',
       )
-      sm.writeTo(c.id, 'echo 静止セッション\r')
+      sm.writeTo(c.id, 'cd /private/tmp; echo 静止セッション\r')
       sm.writeTo(d.id, 'exit\r')
     })
   }
