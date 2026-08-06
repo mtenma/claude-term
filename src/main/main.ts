@@ -69,6 +69,7 @@ function registerIpc(): void {
     (e): SessionsUpdate => smOf(e.sender)?.currentUpdate() ?? {sessions: [], activeId: null},
   )
   ipcMain.on(CH.sessionAttach, (e, id: string) => smOf(e.sender)?.attach(id))
+  ipcMain.on(CH.sessionsReorder, (e, ids: string[]) => smOf(e.sender)?.reorder(ids))
   ipcMain.on(CH.termIn, (e, data: string) => smOf(e.sender)?.inputToActive(data))
   ipcMain.on(CH.termResize, (e, size: {cols: number; rows: number}) =>
     smOf(e.sender)?.resize(size.cols, size.rows),

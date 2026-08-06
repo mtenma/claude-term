@@ -120,6 +120,21 @@ check(
   `+new はアクティブセッションのディレクトリで開く (cwd=${cInfo?.cwd})`,
 )
 
+// ドラッグ&ドロップの並び替えが表示順(currentUpdate)に反映されること
+sm.reorder([c.id, a.id])
+const order1 = sm.currentUpdate().sessions.map((x) => x.id)
+check(
+  order1.join(',') === `${c.id},${a.id}`,
+  `reorder が表示順に反映される (order=${order1.join(',')})`,
+)
+// 不明な ID は無視し、指定に含まれないセッションは末尾に残ること
+sm.reorder(['nope', a.id])
+const order2 = sm.currentUpdate().sessions.map((x) => x.id)
+check(
+  order2.join(',') === `${a.id},${c.id}`,
+  `reorder は不明 ID を無視し指定漏れを末尾に残す (order=${order2.join(',')})`,
+)
+
 sm.disposeAll()
 clearTimeout(watchdog)
 console.log(pass ? 'SMOKE PASS' : 'SMOKE FAIL')

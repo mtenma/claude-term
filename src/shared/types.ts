@@ -30,6 +30,7 @@ export const CH = {
   sessionKill: 'session:kill',
   sessionAttach: 'session:attach',
   sessionsRequest: 'sessions:request',
+  sessionsReorder: 'sessions:reorder',
   sessionsUpdate: 'sessions:update',
   termOut: 'term:out',
   termIn: 'term:in',

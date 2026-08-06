@@ -123,6 +123,8 @@ let sessions: SessionInfo[] = []
 let activeId: string | null = null
 
 function applyUpdate(u: SessionsUpdate): void {
+  // ドラッグ中の再描画は DnD を中断させるため見送る(確定時に main から強制更新が届く)
+  if (draggingId !== null) return
   sessions = u.sessions
   activeId = u.activeId
   if (activeId === null) term.reset()
@@ -140,6 +142,23 @@ function renderList(): void {
 function buildCard(s: SessionInfo): HTMLElement {
   const card = document.createElement('div')
   card.className = `card ${s.state}${s.id === activeId ? ' selected' : ''}`
+  card.dataset.id = s.id
+  card.draggable = true
+  card.addEventListener('dragstart', (e) => {
+    draggingId = s.id
+    e.dataTransfer?.setData('text/plain', s.id)
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+    // 即クラスを付けるとドラッグゴースト画像まで薄くなるため、キャプチャ後に付ける
+    requestAnimationFrame(() => card.classList.add('dragging'))
+  })
+  card.addEventListener('dragend', () => {
+    card.classList.remove('dragging')
+    draggingId = null
+    const order = [...listEl.querySelectorAll<HTMLElement>('.card')]
+      .map((c) => c.dataset.id ?? '')
+      .filter((id) => id !== '')
+    api.reorderSessions(order)
+  })
 
   const head = document.createElement('div')
   head.className = 'card-head'
@@ -203,6 +222,36 @@ function buildCard(s: SessionInfo): HTMLElement {
   })
   return card
 }
+
+// ---- セッションの並び替え(ドラッグ&ドロップ) ----
+
+let draggingId: string | null = null
+
+/** ドロップ先: マウス Y より下にある最初のカード(無ければ末尾) */
+function dragAfterElement(y: number): HTMLElement | null {
+  let closest: {offset: number; el: HTMLElement} | null = null
+  for (const el of listEl.querySelectorAll<HTMLElement>('.card:not(.dragging)')) {
+    const box = el.getBoundingClientRect()
+    const offset = y - box.top - box.height / 2
+    if (offset < 0 && (closest === null || offset > closest.offset)) closest = {offset, el}
+  }
+  return closest?.el ?? null
+}
+
+listEl.addEventListener('dragover', (e) => {
+  if (draggingId === null) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  const dragging = listEl.querySelector<HTMLElement>('.card.dragging')
+  if (!dragging) return
+  const after = dragAfterElement(e.clientY)
+  if (after === null) listEl.appendChild(dragging)
+  else if (after !== dragging) listEl.insertBefore(dragging, after)
+})
+
+listEl.addEventListener('drop', (e) => {
+  if (draggingId !== null) e.preventDefault()
+})
 
 newBtn.addEventListener('click', () => {
   void api.createSession().then(() => term.focus())

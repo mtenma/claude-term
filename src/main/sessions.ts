@@ -289,25 +289,37 @@ export class SessionManager {
   private removeSession(id: string): void {
     const s = this.sessions.get(id)
     if (!s) return
+    // 削除前の表示順を控えておき、アクティブだった場合は近傍(次、無ければ手前)へ移る
+    const order = [...this.sessions.values()]
+    const pos = order.indexOf(s)
     this.disableAnswerback(s)
     s.term.dispose()
     this.sessions.delete(id)
     if (this.activeId === id) {
       this.activeId = null
-      const next = this.neighborOf(s.index)
+      const next = order[pos + 1] ?? order[pos - 1]
       if (next) this.attach(next.id)
     }
     this.emitIfChanged(true)
   }
 
-  /** 削除されたセッションの近傍(次の若い番号、無ければ手前)を返す */
-  private neighborOf(index: number): Session | null {
-    let before: Session | null = null
-    for (const s of this.sessions.values()) {
-      if (s.index > index) return s
-      before = s
+  /**
+   * サイドバーのドラッグ&ドロップで確定した表示順を反映する。
+   * 表示順の実体は Map の挿入順なので、指定順で作り直す。
+   * 不明な ID は無視し、指定に含まれないセッション(並び替え中に増えた等)は末尾に残す。
+   */
+  reorder(ids: string[]): void {
+    if (!Array.isArray(ids)) return
+    const next = new Map<string, Session>()
+    for (const id of ids) {
+      const s = this.sessions.get(id)
+      if (s) next.set(id, s)
     }
-    return before
+    for (const [id, s] of this.sessions) {
+      if (!next.has(id)) next.set(id, s)
+    }
+    this.sessions = next
+    this.emitIfChanged(true)
   }
 
   resize(cols: number, rows: number): void {
