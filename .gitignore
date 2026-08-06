@@ -3,5 +3,6 @@ dist/
 dist-test/
 release/
 *.png
+!docs/*.png
 *.log
 .DS_Store

@@ -1,6 +1,8 @@
 # Claude Term
 
-Claude Code 用途に特化したターミナルアプリ。デスクトップがターミナルウィンドウだらけになる問題を、**1ウィンドウ = メイン表示 + セッションカード一覧** で解決します。
+Claude Code 用途に特化したターミナルアプリ(macOS / Apple Silicon)。デスクトップがターミナルウィンドウだらけになる問題を、**1ウィンドウ = メイン表示 + セッションカード一覧** で解決します。
+
+![Claude Term のスクリーンショット](docs/screenshot.png)
 
 - 左: メインターミナル(フル表示)
 - 右: 起動中セッションのカード一覧(画面末尾5行のプレビュー付き)
@@ -15,25 +17,33 @@ Claude Code 用途に特化したターミナルアプリ。デスクトップ�
 
 カードをクリックするとそのセッションがメインにフル表示され、裏のセッションも動き続けます。「＋ new」は素の zsh ログインシェルを即座に開きます。`cd` での移動や `claude` / `codex` の起動は通常のターミナルと同じように自分でコマンドを打ちます。
 
-## 起動方法
+## インストール
 
-開発モード:
+### A. ビルド済み DMG(Releases からダウンロード)
+
+[Releases](../../releases) から `Claude Term-<version>-arm64.dmg` をダウンロードし、開いて `Claude Term.app` を Applications にドラッグしてください。
+
+**重要**: 配布物は ad-hoc 署名(Apple の公証なし)のため、ダウンロード後そのまま開くと macOS に「開発元を確認できない/壊れている」と拒否されます。インストール後に一度だけ以下を実行してください:
 
 ```sh
+xattr -cr "/Applications/Claude Term.app"
+```
+
+(またはシステム設定 → プライバシーとセキュリティ → 「このまま開く」)
+
+### B. ソースからビルド(推奨・警告なし)
+
+必要環境: macOS (Apple Silicon) + Node.js 20+
+
+```sh
+git clone https://github.com/mtenma/claude-term.git
+cd claude-term
 npm install
-npm start
+npm start            # そのまま起動(開発モード)
+npm run package      # release/ に自分用の .app と DMG を生成
 ```
 
-### インストーラー(.dmg)の作成
-
-```sh
-npm run package
-```
-
-`release/` に `Claude Term-<version>-arm64.dmg` と `mac-arm64/Claude Term.app` が生成されます。DMG を開いて Applications にドラッグするか、.app を直接 `/Applications` にコピーしてください。
-
-- 署名は ad-hoc(ローカル用)です。自分のマシンでビルドしたものはそのまま起動できますが、他のマシンに配る場合は Gatekeeper の警告が出ます(右クリック→開く、または Developer ID 署名+公証が必要)
-- Apple Silicon (arm64) 専用ビルドです
+自分のマシンでビルドしたアプリは Gatekeeper の警告なしで起動できます。
 
 ## Claude Code の状態検知(hooks 連携)
 
