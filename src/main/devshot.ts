@@ -1,6 +1,6 @@
 import {app, type BrowserWindow} from 'electron'
 import * as fs from 'node:fs'
-import type {SessionManager} from './sessions'
+import {whenAllPtysExited, type SessionManager} from './sessions'
 
 /**
  * 開発検証用の自動スクリーンショット。
@@ -65,8 +65,10 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
         console.error('[devshot] failed:', err)
         code = 1
       }
+      // app.exit は will-quit を通らないため、ここでも PTY の onExit 配送を待ってから終了する
       sm.disposeAll()
-      app.exit(code)
+      await whenAllPtysExited(1500)
+      setTimeout(() => app.exit(code), 50)
     })()
   })
 }

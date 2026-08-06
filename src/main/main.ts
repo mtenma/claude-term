@@ -1,7 +1,7 @@
 import {app, BrowserWindow, dialog, ipcMain, Menu, Notification} from 'electron'
 import * as path from 'node:path'
 import {CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
-import {SessionManager} from './sessions'
+import {SessionManager, whenAllPtysExited} from './sessions'
 import {startHookServer} from './hookServer'
 import {ensureClaudeHooks} from './claudeHooks'
 import {maybeRunDevshot} from './devshot'
@@ -204,8 +204,21 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
-app.on('will-quit', () => {
+// PTY を kill した直後に Node 環境の破棄へ進むと、node-pty が onExit を
+// ThreadSafeFunction で配送しようとして abort する(終了時 SIGABRT クラッシュ)。
+// quit を一旦止め、全 PTY の onExit が JS 側へ届いてから本当に終了する
+let quitReady = false
+app.on('will-quit', (e) => {
+  if (quitReady) return
+  e.preventDefault()
   for (const ctx of contexts.values()) ctx.sm.disposeAll()
+  void whenAllPtysExited(1500).then(() => {
+    // 飛行中の onData 等のコールバックが掃けるまで一拍置く
+    setTimeout(() => {
+      quitReady = true
+      app.quit()
+    }, 50)
+  })
 })
 
 void main()

@@ -23,6 +23,36 @@ const LOW_WATER = 250_000
 
 type HookState = 'running' | 'attention' | 'idle'
 
+// アプリ終了時に node-pty の onExit(ThreadSafeFunction)配送の完了を待つための追跡。
+// 配送前に Node 環境の破棄が始まると pty.node が C++ 例外で abort する(macOS で SIGABRT)
+let livePtyCount = 0
+const ptyExitWaiters = new Set<() => void>()
+
+function trackPtySpawn(): void {
+  livePtyCount++
+}
+
+function trackPtyExit(): void {
+  livePtyCount--
+  if (livePtyCount <= 0) {
+    for (const done of [...ptyExitWaiters]) done()
+  }
+}
+
+/** 全 PTY の onExit が JS 側へ届くまで待つ(quit のゲート用。タイムアウトあり) */
+export function whenAllPtysExited(timeoutMs: number): Promise<void> {
+  if (livePtyCount <= 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer)
+      ptyExitWaiters.delete(done)
+      resolve()
+    }
+    const timer = setTimeout(done, timeoutMs)
+    ptyExitWaiters.add(done)
+  })
+}
+
 /** Notification hook の stdin JSON から通知メッセージを取り出す */
 function extractHookMessage(rawBody: string): string | null {
   if (!rawBody) return null
@@ -122,6 +152,7 @@ export class SessionManager {
       cwd,
       env,
     })
+    trackPtySpawn()
     const term = new Terminal({
       cols: this.cols,
       rows: this.rows,
@@ -174,6 +205,7 @@ export class SessionManager {
     })
     pty.onData((data) => this.handlePtyData(session, data))
     pty.onExit(({exitCode}) => {
+      trackPtyExit()
       session.exited = true
       this.disableAnswerback(session)
       if (exitCode === 0) {
