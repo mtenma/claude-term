@@ -13,6 +13,13 @@
   <div id="app">
     <main id="main-pane">
       <div id="term-host"></div>
+      <div id="search-bar" class="hidden">
+        <input id="search-input" type="text" placeholder="検索" spellcheck="false" />
+        <span id="search-count"></span>
+        <button id="search-prev" title="前へ (Shift+Enter)">↑</button>
+        <button id="search-next" title="次へ (Enter)">↓</button>
+        <button id="search-close" title="閉じる (Esc)">×</button>
+      </div>
       <div id="placeholder">
         <p class="placeholder-title">セッションがありません</p>
         <p class="placeholder-sub">右上の「＋ new」で新しいターミナルを起動</p>

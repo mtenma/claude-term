@@ -1,4 +1,4 @@
-import {app, BrowserWindow, dialog, ipcMain, Menu, Notification} from 'electron'
+import {app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell} from 'electron'
 import * as path from 'node:path'
 import {CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
 import {SessionManager, whenAllPtysExited} from './sessions'
@@ -34,15 +34,12 @@ function updateDockBadge(): void {
   app.dock?.setBadge(n > 0 ? String(n) : '')
 }
 
-function notifyAttention(ctx: WindowContext, info: SessionInfo): void {
+function notifySession(ctx: WindowContext, info: SessionInfo, subtitle: string, body: string): void {
   if (shotMode) return
   // そのセッションを今まさに見ているなら通知しない
   if (ctx.win.isFocused() && ctx.sm.activeId === info.id) return
   if (!Notification.isSupported()) return
-  const notif = new Notification({
-    title: `${info.title} — 承認待ち`,
-    body: info.attentionMessage ?? 'Claude Code が承認または入力を待っています',
-  })
+  const notif = new Notification({title: `${info.title} — ${subtitle}`, body})
   notif.on('click', () => {
     if (!ctx.win.isDestroyed()) {
       ctx.win.show()
@@ -75,6 +72,10 @@ function registerIpc(): void {
     smOf(e.sender)?.resize(size.cols, size.rows),
   )
   ipcMain.on(CH.termAck, (e, bytes: number) => smOf(e.sender)?.ack(bytes))
+  ipcMain.on(CH.shellOpenExternal, (_e, url: string) => {
+    // ターミナル出力由来の文字列なので http(s) 以外は開かない
+    if (typeof url === 'string' && /^https?:\/\//.test(url)) void shell.openExternal(url)
+  })
 }
 
 function confirmClose(ctx: WindowContext): void {
@@ -122,8 +123,18 @@ async function createWindow(): Promise<WindowContext> {
     updateDockBadge()
   }
   sm.onTermOut = (p) => send(ctx, CH.termOut, p)
-  sm.onStateChange = (info) => {
-    if (info.state === 'attention') notifyAttention(ctx, info)
+  sm.onStateChange = (info, prev) => {
+    if (info.state === 'attention') {
+      notifySession(
+        ctx,
+        info,
+        '承認待ち',
+        info.attentionMessage ?? 'Claude Code が承認または入力を待っています',
+      )
+    } else if (prev === 'running' && info.state === 'idle' && info.claudeActive) {
+      // Stop hook による 実行中→待機 遷移 = claude の応答完了
+      notifySession(ctx, info, '応答完了', 'Claude Code の応答が完了しました')
+    }
   }
 
   win.once('ready-to-show', () => win.show())
@@ -199,6 +210,14 @@ function setupMenu(): void {
           accelerator: 'CmdOrCtrl+A',
           click: (_item, win) => {
             if (win instanceof BrowserWindow) win.webContents.send(CH.editSelectAll)
+          },
+        },
+        {type: 'separator'},
+        {
+          label: '検索',
+          accelerator: 'CmdOrCtrl+F',
+          click: (_item, win) => {
+            if (win instanceof BrowserWindow) win.webContents.send(CH.editFind)
           },
         },
       ],

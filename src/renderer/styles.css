@@ -55,6 +55,66 @@ body.resizing {
   height: 100%;
 }
 
+/* ---- ターミナル内検索 ---- */
+
+#search-bar {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+#search-bar.hidden {
+  display: none;
+}
+
+#search-input {
+  width: 180px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+#search-input:focus {
+  border-color: var(--accent);
+}
+
+#search-count {
+  font-size: 11px;
+  color: var(--text-faint);
+  min-width: 40px;
+  text-align: center;
+}
+
+#search-bar button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#search-bar button:hover {
+  background: #33333a;
+  color: var(--text);
+}
+
 #placeholder {
   position: absolute;
   inset: 0;

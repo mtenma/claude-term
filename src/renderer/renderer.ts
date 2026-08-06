@@ -1,6 +1,8 @@
 import {Terminal} from '@xterm/xterm'
 import {FitAddon} from '@xterm/addon-fit'
 import {WebglAddon} from '@xterm/addon-webgl'
+import {SearchAddon} from '@xterm/addon-search'
+import {WebLinksAddon} from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import './styles.css'
 import type {SessionInfo, SessionState, SessionsUpdate, TermOut} from '../shared/types'
@@ -53,6 +55,14 @@ const term = new Terminal({
 })
 const fit = new FitAddon()
 term.loadAddon(fit)
+const search = new SearchAddon()
+term.loadAddon(search)
+// URL は誤クリック防止のため ⌘ クリックでのみ開く(iTerm 等の作法)
+term.loadAddon(
+  new WebLinksAddon((ev, uri) => {
+    if (ev.metaKey) api.openExternal(uri)
+  }),
+)
 term.open(host)
 try {
   const webgl = new WebglAddon()
@@ -117,6 +127,69 @@ new ResizeObserver(() => {
 }).observe(host)
 requestAnimationFrame(applyFit)
 
+// ---- ターミナル内検索 (⌘F) ----
+
+const searchBar = el<HTMLDivElement>('search-bar')
+const searchInput = el<HTMLInputElement>('search-input')
+const searchCount = el<HTMLSpanElement>('search-count')
+
+const SEARCH_DECORATIONS = {
+  matchBackground: '#3f3f46',
+  matchOverviewRuler: '#6b6b74',
+  activeMatchBackground: '#d97757',
+  activeMatchColorOverviewRuler: '#d97757',
+}
+
+search.onDidChangeResults(({resultIndex, resultCount}) => {
+  if (searchInput.value === '') searchCount.textContent = ''
+  else if (resultCount <= 0) searchCount.textContent = '0件'
+  else searchCount.textContent = `${resultIndex + 1}/${resultCount}`
+})
+
+function doSearch(dir: 'next' | 'prev', incremental = false): void {
+  const q = searchInput.value
+  if (q === '') {
+    search.clearDecorations()
+    searchCount.textContent = ''
+    return
+  }
+  const opts = {incremental, decorations: SEARCH_DECORATIONS}
+  if (dir === 'next') search.findNext(q, opts)
+  else search.findPrevious(q, opts)
+}
+
+function openSearch(): void {
+  searchBar.classList.remove('hidden')
+  searchInput.focus()
+  searchInput.select()
+  if (searchInput.value !== '') doSearch('next', true)
+}
+
+function closeSearch(): void {
+  if (searchBar.classList.contains('hidden')) return
+  search.clearDecorations()
+  searchCount.textContent = ''
+  searchBar.classList.add('hidden')
+  term.focus()
+}
+
+searchInput.addEventListener('input', () => doSearch('next', true))
+searchInput.addEventListener('keydown', (ev) => {
+  if (ev.isComposing) return
+  if (ev.key === 'Enter') {
+    ev.preventDefault()
+    doSearch(ev.shiftKey ? 'prev' : 'next')
+  } else if (ev.key === 'Escape') {
+    ev.preventDefault()
+    closeSearch()
+  }
+})
+el<HTMLButtonElement>('search-prev').addEventListener('click', () => doSearch('prev'))
+el<HTMLButtonElement>('search-next').addEventListener('click', () => doSearch('next'))
+el<HTMLButtonElement>('search-close').addEventListener('click', closeSearch)
+
+api.onFind(openSearch)
+
 // ---- サイドバー ----
 
 let sessions: SessionInfo[] = []
@@ -125,6 +198,8 @@ let activeId: string | null = null
 function applyUpdate(u: SessionsUpdate): void {
   // ドラッグ中の再描画は DnD を中断させるため見送る(確定時に main から強制更新が届く)
   if (draggingId !== null) return
+  // 表示セッションが変わったら検索状態は持ち越さない
+  if (u.activeId !== activeId) closeSearch()
   sessions = u.sessions
   activeId = u.activeId
   if (activeId === null) term.reset()
@@ -215,6 +290,7 @@ function buildCard(s: SessionInfo): HTMLElement {
       term.focus()
       return
     }
+    closeSearch()
     activeId = s.id
     api.attachSession(s.id)
     term.focus()

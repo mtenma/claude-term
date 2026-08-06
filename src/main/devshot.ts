@@ -1,5 +1,6 @@
 import {app, type BrowserWindow} from 'electron'
 import * as fs from 'node:fs'
+import {CH} from '../shared/types'
 import {whenAllPtysExited, type SessionManager} from './sessions'
 
 /**
@@ -9,6 +10,7 @@ import {whenAllPtysExited, type SessionManager} from './sessions'
  *   empty  … セッション無し(プレースホルダ確認)
  *   basic  … 1セッションで色付き出力
  *   states … 4セッションで 実行中/承認待ち/待機/終了 の4状態を再現
+ *   search … ⌘F 検索バーを開いて「error」を検索した状態(ハイライト確認)
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
 export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
@@ -33,6 +35,19 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
     sm.attach(a.id)
     at(1500, () => {
       sm.writeTo(a.id, 'head -c 3000000 /dev/urandom | base64; echo FLOOD_DONE\r')
+    })
+  } else if (scenario === 'search') {
+    const a = sm.create()
+    sm.attach(a.id)
+    at(1500, () => {
+      sm.writeTo(a.id, "printf 'error: one\\nok line\\nerror: two\\nplain\\nerror: three\\n'\r")
+    })
+    at(3500, () => {
+      win.webContents.send(CH.editFind)
+      // 検索入力欄へ合成キーイベントで「error」を打ち込む
+      for (const ch of 'error') {
+        win.webContents.sendInputEvent({type: 'char', keyCode: ch})
+      }
     })
   } else if (scenario === 'states') {
     const a = sm.create() // 実行中(緑): 連続出力

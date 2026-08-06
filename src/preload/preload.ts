@@ -19,6 +19,10 @@ const api = {
   onSelectAll: (cb: () => void): void => {
     ipcRenderer.on(CH.editSelectAll, () => cb())
   },
+  onFind: (cb: () => void): void => {
+    ipcRenderer.on(CH.editFind, () => cb())
+  },
+  openExternal: (url: string): void => ipcRenderer.send(CH.shellOpenExternal, url),
 }
 
 contextBridge.exposeInMainWorld('claudeTerm', api)

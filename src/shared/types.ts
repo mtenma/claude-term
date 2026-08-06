@@ -33,6 +33,8 @@ export const CH = {
   sessionsReorder: 'sessions:reorder',
   sessionsUpdate: 'sessions:update',
   editSelectAll: 'edit:selectAll',
+  editFind: 'edit:find',
+  shellOpenExternal: 'shell:openExternal',
   termOut: 'term:out',
   termIn: 'term:in',
   termResize: 'term:resize',
