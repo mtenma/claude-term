@@ -481,6 +481,7 @@ export class SessionManager {
       preview: this.previewOf(s),
       metrics: s.metrics,
       attentionMessage: s.attentionMessage,
+      claudeActive: s.hookState !== null,
     }
   }
 

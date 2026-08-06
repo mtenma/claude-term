@@ -11,6 +11,8 @@ export interface SessionInfo {
   metrics: {model?: string; contextPct?: number; costUsd?: number} | null
   /** 承認待ちのとき、何の承認を求めているかのメッセージ(不明なら null) */
   attentionMessage: string | null
+  /** hooks 検知により claude が動いているセッションか(改行支援のゲートに使う) */
+  claudeActive: boolean
 }
 
 export interface SessionsUpdate {

@@ -62,7 +62,37 @@ try {
   // WebGL が使えない環境では DOM レンダラーで続行
 }
 
-term.onData((d) => api.termInput(d))
+// 改行支援のため「直前に打った文字がスペースか」を追跡する
+let lastTypedWasSpace = false
+term.onData((d) => {
+  lastTypedWasSpace = d.endsWith(' ')
+  api.termInput(d)
+})
+
+// claude 実行中のセッションでのみ有効な改行支援:
+//   行末スペース + Enter → スペースを消して \ + Enter(claude の改行)
+//   Shift + Enter        → \ + Enter
+// 通常のシェルでは介入しない。IME 変換中の Enter にも介入しない。
+function activeClaude(): boolean {
+  return sessions.find((s) => s.id === activeId)?.claudeActive ?? false
+}
+term.attachCustomKeyEventHandler((ev) => {
+  if (ev.type !== 'keydown') return true
+  if (ev.isComposing || ev.keyCode === 229) return true
+  if (ev.key !== 'Enter' || ev.ctrlKey || ev.metaKey || ev.altKey) return true
+  if (!activeClaude()) return true
+  if (ev.shiftKey) {
+    api.termInput('\\\r')
+    lastTypedWasSpace = false
+    return false
+  }
+  if (lastTypedWasSpace) {
+    api.termInput('\x7f\\\r')
+    lastTypedWasSpace = false
+    return false
+  }
+  return true
+})
 
 api.onTermOut((p: TermOut) => {
   if (p.kind === 'snapshot') term.reset()
