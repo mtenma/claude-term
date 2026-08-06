@@ -69,10 +69,11 @@ term.onData((d) => {
   api.termInput(d)
 })
 
-// claude 実行中のセッションでのみ有効な改行支援:
-//   行末スペース + Enter → スペースを消して \ + Enter(claude の改行)
-//   Shift + Enter        → \ + Enter
-// 通常のシェルでは介入しない。IME 変換中の Enter にも介入しない。
+// 改行支援:
+//   Shift + Enter → claude 実行中は \ + Enter(claude の改行記法)、
+//                   それ以外は LF(= Ctrl+J。codex 等の TUI が改行として解釈)
+//   行末スペース + Enter → claude 実行中のみ、スペースを消して \ + Enter
+// IME 変換中の Enter には介入しない。
 function activeClaude(): boolean {
   return sessions.find((s) => s.id === activeId)?.claudeActive ?? false
 }
@@ -80,13 +81,13 @@ term.attachCustomKeyEventHandler((ev) => {
   if (ev.type !== 'keydown') return true
   if (ev.isComposing || ev.keyCode === 229) return true
   if (ev.key !== 'Enter' || ev.ctrlKey || ev.metaKey || ev.altKey) return true
-  if (!activeClaude()) return true
+  const claude = activeClaude()
   if (ev.shiftKey) {
-    api.termInput('\\\r')
+    api.termInput(claude ? '\\\r' : '\n')
     lastTypedWasSpace = false
     return false
   }
-  if (lastTypedWasSpace) {
+  if (claude && lastTypedWasSpace) {
     api.termInput('\x7f\\\r')
     lastTypedWasSpace = false
     return false
