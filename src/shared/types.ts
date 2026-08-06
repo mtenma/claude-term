@@ -32,6 +32,7 @@ export const CH = {
   sessionsRequest: 'sessions:request',
   sessionsReorder: 'sessions:reorder',
   sessionsUpdate: 'sessions:update',
+  editSelectAll: 'edit:selectAll',
   termOut: 'term:out',
   termIn: 'term:in',
   termResize: 'term:resize',

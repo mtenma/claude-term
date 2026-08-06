@@ -158,7 +158,24 @@ function setupMenu(): void {
         {role: 'close', label: 'ウィンドウを閉じる'},
       ],
     },
-    {role: 'editMenu', label: '編集'},
+    {
+      // editMenu ロール一式はターミナルには作用しないものが大半なので、
+      // 実際に機能するものだけを置く。コピー/ペーストのロールは
+      // ⌘C/⌘V のショートカット配線を兼ねるため削除してはいけない
+      label: '編集',
+      submenu: [
+        {role: 'copy', label: 'コピー'},
+        {role: 'paste', label: 'ペースト'},
+        {type: 'separator'},
+        {
+          label: 'すべてを選択',
+          accelerator: 'CmdOrCtrl+A',
+          click: (_item, win) => {
+            if (win instanceof BrowserWindow) win.webContents.send(CH.editSelectAll)
+          },
+        },
+      ],
+    },
     {role: 'viewMenu', label: '表示'},
     {role: 'windowMenu', label: 'ウィンドウ'},
   ]

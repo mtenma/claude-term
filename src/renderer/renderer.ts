@@ -260,6 +260,12 @@ newBtn.addEventListener('click', () => {
 api.onSessionsUpdate(applyUpdate)
 void api.requestSessions().then(applyUpdate)
 
+// メニューの「すべてを選択」(⌘A) はターミナルの全バッファ選択として動かす
+api.onSelectAll(() => {
+  term.selectAll()
+  term.focus()
+})
+
 // ---- サイドバー幅のドラッグ調整 ----
 
 splitter.addEventListener('mousedown', (e) => {

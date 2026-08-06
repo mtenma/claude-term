@@ -16,6 +16,9 @@ const api = {
   onTermOut: (cb: (p: TermOut) => void): void => {
     ipcRenderer.on(CH.termOut, (_e, p: TermOut) => cb(p))
   },
+  onSelectAll: (cb: () => void): void => {
+    ipcRenderer.on(CH.editSelectAll, () => cb())
+  },
 }
 
 contextBridge.exposeInMainWorld('claudeTerm', api)
