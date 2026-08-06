@@ -17,10 +17,23 @@ Claude Code 用途に特化したターミナルアプリ。デスクトップ�
 
 ## 起動方法
 
+開発モード:
+
 ```sh
 npm install
 npm start
 ```
+
+### インストーラー(.dmg)の作成
+
+```sh
+npm run package
+```
+
+`release/` に `Claude Term-<version>-arm64.dmg` と `mac-arm64/Claude Term.app` が生成されます。DMG を開いて Applications にドラッグするか、.app を直接 `/Applications` にコピーしてください。
+
+- 署名は ad-hoc(ローカル用)です。自分のマシンでビルドしたものはそのまま起動できますが、他のマシンに配る場合は Gatekeeper の警告が出ます(右クリック→開く、または Developer ID 署名+公証が必要)
+- Apple Silicon (arm64) 専用ビルドです
 
 ## Claude Code の状態検知(hooks 連携)
 

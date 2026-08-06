@@ -3,6 +3,7 @@
   "productName": "Claude Term",
   "version": "0.1.0",
   "description": "Claude Code 専用ターミナル — 複数セッションを1ウィンドウで管理",
+  "author": "Masayuki Tenma <tenma@sabira.jp>",
   "private": true,
   "main": "dist/main/main.js",
   "scripts": {
@@ -11,7 +12,33 @@
     "start": "npm run build && electron .",
     "smoke": "node scripts/smoke-sessions.mjs",
     "shot": "npm run build && electron .",
+    "package": "npm run build && electron-builder --mac dmg",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
+  },
+  "build": {
+    "appId": "jp.sabira.claude-term",
+    "productName": "Claude Term",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "npmRebuild": false,
+    "mac": {
+      "identity": null,
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": "arm64"
+        }
+      ]
+    }
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",
@@ -24,6 +51,7 @@
   "devDependencies": {
     "@types/node": "26.1.2",
     "electron": "43.3.0",
+    "electron-builder": "26.15.3",
     "esbuild": "0.28.1",
     "typescript": "7.0.2"
   }
