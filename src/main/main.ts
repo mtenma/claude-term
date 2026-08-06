@@ -144,8 +144,32 @@ async function createWindow(): Promise<WindowContext> {
 }
 
 function setupMenu(): void {
+  // viewMenu ロールのうちリロード系は、再読込後にアクティブセッションの
+  // 画面が再 attach まで空になるため置かない。DevTools は開発実行時のみ
+  const viewItems: Electron.MenuItemConstructorOptions[] = [
+    {role: 'resetZoom', label: '実際のサイズ'},
+    {role: 'zoomIn', label: '拡大'},
+    {role: 'zoomOut', label: '縮小'},
+    {type: 'separator'},
+    {role: 'togglefullscreen', label: 'フルスクリーンにする'},
+  ]
+  if (!app.isPackaged) {
+    viewItems.push({type: 'separator'}, {role: 'toggleDevTools', label: '開発者ツール'})
+  }
   const template: Electron.MenuItemConstructorOptions[] = [
-    {role: 'appMenu'},
+    {
+      // appMenu ロールから使わない「サービス」を除いた構成
+      label: app.name,
+      submenu: [
+        {role: 'about', label: 'Claude Term について'},
+        {type: 'separator'},
+        {role: 'hide', label: 'Claude Term を隠す'},
+        {role: 'hideOthers', label: 'ほかを隠す'},
+        {role: 'unhide', label: 'すべてを表示'},
+        {type: 'separator'},
+        {role: 'quit', label: 'Claude Term を終了'},
+      ],
+    },
     {
       label: 'ファイル',
       submenu: [
@@ -176,8 +200,19 @@ function setupMenu(): void {
         },
       ],
     },
-    {role: 'viewMenu', label: '表示'},
-    {role: 'windowMenu', label: 'ウィンドウ'},
+    {label: '表示', submenu: viewItems},
+    {
+      // windowMenu ロールを維持すると macOS が開いているウィンドウ一覧を
+      // 末尾に自動追加してくれる(複数ウィンドウの切替に使う)
+      role: 'windowMenu',
+      label: 'ウィンドウ',
+      submenu: [
+        {role: 'minimize', label: 'しまう'},
+        {role: 'zoom', label: '拡大/縮小'},
+        {type: 'separator'},
+        {role: 'front', label: 'すべてを手前に移動'},
+      ],
+    },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
   app.dock?.setMenu(
