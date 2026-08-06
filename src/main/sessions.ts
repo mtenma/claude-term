@@ -60,7 +60,11 @@ export class SessionManager {
     const shell = process.env.SHELL || '/bin/zsh'
     const env: Record<string, string> = {}
     for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined) env[k] = v
+      if (v === undefined) continue
+      // アプリ自体が Claude Code セッション内から起動された場合でも、
+      // 中のシェルの claude がネスト実行と誤認しないよう継承させない
+      if (k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_')) continue
+      env[k] = v
     }
     delete env.ELECTRON_RUN_AS_NODE
     env.LANG = env.LANG || 'ja_JP.UTF-8'
