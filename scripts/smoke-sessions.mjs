@@ -90,6 +90,17 @@ check(
   `再構築画面がミラー画面と一致 (rebuilt=${rebuilt.length} mirror=${mirror?.length} chars)`,
 )
 
+// リサイズ起因の再描画出力で「待機」が「実行中」に化けないこと
+await sleep(3000) // 完全に静穏化させる
+const stateBefore = sm.currentUpdate().sessions.find((x) => x.id === b.id)?.state
+sm.resize(100, 30) // SIGWINCH → シェルがプロンプトを再描画する
+await sleep(1300)
+const stateAfter = sm.currentUpdate().sessions.find((x) => x.id === b.id)?.state
+check(
+  stateBefore === 'idle' && stateAfter === 'idle',
+  `リサイズ後も待機セッションは待機のまま (before=${stateBefore} after=${stateAfter})`,
+)
+
 sm.disposeAll()
 clearTimeout(watchdog)
 console.log(pass ? 'SMOKE PASS' : 'SMOKE FAIL')

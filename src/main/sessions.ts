@@ -9,6 +9,8 @@ import type {SessionInfo, SessionState, SessionsUpdate, TermOut} from '../shared
 const PREVIEW_LINES = 5
 const PREVIEW_SCAN_LIMIT = 200
 const ACTIVITY_WINDOW_MS = 2500
+// リサイズ直後は SIGWINCH による再描画出力が届くため、活動判定から除外する猶予
+const RESIZE_GRACE_MS = 1000
 const HOOK_RUNNING_STALE_MS = 60_000
 const TICK_MS = 700
 const CWD_POLL_MS = 2000
@@ -47,6 +49,7 @@ export class SessionManager {
   private cols = 80
   private rows = 24
   private attachEpoch = 0
+  private lastResizeAt = 0
   private unackedBytes = 0
   private lastEmitted = ''
   activeId: string | null = null
@@ -223,6 +226,7 @@ export class SessionManager {
     if (cols === this.cols && rows === this.rows) return
     this.cols = cols
     this.rows = rows
+    this.lastResizeAt = Date.now()
     // 全セッションをメイン表示の寸法に常時揃える(attach 時の再折返し崩れを防ぐ)。
     // headless を先に resize してから PTY に伝える
     for (const s of this.sessions.values()) {
@@ -291,7 +295,9 @@ export class SessionManager {
   }
 
   private handlePtyData(s: Session, data: string): void {
-    s.lastOutputAt = Date.now()
+    const now = Date.now()
+    // リサイズ起因の再描画出力を「実行中」と誤認しない
+    if (now - this.lastResizeAt > RESIZE_GRACE_MS) s.lastOutputAt = now
     s.term.write(data)
     if (this.activeId === s.id) {
       if (s.pendingDuringAttach) s.pendingDuringAttach.push(data)
