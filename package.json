@@ -1,0 +1,30 @@
+{
+  "name": "claude-term",
+  "productName": "Claude Term",
+  "version": "0.1.0",
+  "description": "Claude Code 専用ターミナル — 複数セッションを1ウィンドウで管理",
+  "private": true,
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "start": "npm run build && electron .",
+    "smoke": "node scripts/smoke-sessions.mjs",
+    "shot": "npm run build && electron .",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/addon-webgl": "0.19.0",
+    "@xterm/headless": "6.0.0",
+    "@xterm/xterm": "6.0.0",
+    "node-pty": "1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "electron": "43.3.0",
+    "esbuild": "0.28.1",
+    "typescript": "7.0.2"
+  }
+}

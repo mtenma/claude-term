@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'"
+  />
+  <title>Claude Term</title>
+  <link rel="stylesheet" href="./renderer.css" />
+</head>
+<body>
+  <div id="app">
+    <main id="main-pane">
+      <div id="term-host"></div>
+      <div id="placeholder">
+        <p class="placeholder-title">セッションがありません</p>
+        <p class="placeholder-sub">右上の「＋ new」で新しいターミナルを起動</p>
+      </div>
+    </main>
+    <div id="splitter"></div>
+    <aside id="sidebar">
+      <header id="sidebar-head">
+        <span id="sidebar-title">起動ターミナル</span>
+        <button id="new-btn" title="新しいターミナルを起動">＋ new</button>
+      </header>
+      <div id="session-list"></div>
+    </aside>
+  </div>
+  <script src="./renderer.js"></script>
+</body>
+</html>
