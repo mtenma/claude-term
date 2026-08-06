@@ -62,7 +62,7 @@ npm run package      # release/ に自分用の .app と DMG を生成
   ```
 
 - `CLAUDE_TERM_PORT` は Claude Term のセッション内にだけ存在する環境変数です。**通常のターミナル(iTerm2 等)で claude を使うときは何も実行されません**(ガードで no-op)。
-- 対象イベント: `UserPromptSubmit` / `PreToolUse` / `PostToolUse` → 実行中、`Notification`(permission_prompt|elicitation_dialog|agent_needs_input)→ 承認待ち(通知に要求内容を表示)、`Stop` → 待機、`SessionEnd` → 検知解除
+- 対象イベント: `SessionStart` → 待機(claude 起動を検知)、`UserPromptSubmit` / `PreToolUse` / `PostToolUse` → 実行中、`Notification`(permission_prompt|elicitation_dialog|agent_needs_input)→ 承認待ち(通知に要求内容を表示)、`Stop` → 待機、`SessionEnd` → 検知解除
 - `idle_prompt`(応答完了後の放置)は意図的に対象外です。放置は「待機(グレー)」のままにし、オレンジは「あなたの操作がないと進まない」状態だけを意味します
 - statusLine: `~/.claude/claude-term-statusline.sh` を設置し、`settings.json` の `statusLine` が**未設定の場合のみ**設定します(独自の statusLine を使っている場合は一切触れません)。スクリプトは Claude Term のセッション内でのみ動作し、セッション情報 JSON をアプリへ転送してモデル名・コンテキスト残量・コストをカードに表示、claude の画面にも同じ内容のステータス行を出します
 - 書換え前の内容は `~/.claude/settings.json.backup-claude-term` に保存されます。

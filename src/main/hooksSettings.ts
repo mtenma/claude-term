@@ -27,6 +27,8 @@ export const hookCommand = (state: string, withBody = false): string =>
 // 放置は「待機(グレー)」のままにし、オレンジは「ユーザーの操作で止まっている」だけに絞る。
 export const DESIRED: Array<{event: string; matcher?: string; state: string; withBody?: boolean}> =
   [
+    // claude 起動直後から「claude が動いているセッション」と分かるようにする(改行支援のゲート等)
+    {event: 'SessionStart', state: 'idle'},
     {event: 'UserPromptSubmit', state: 'running'},
     {event: 'PreToolUse', state: 'running'},
     {event: 'PostToolUse', state: 'running'},
