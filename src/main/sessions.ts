@@ -77,7 +77,12 @@ export class SessionManager {
   /** 状態が変化した瞬間に呼ばれる(通知・バッジ用) */
   onStateChange: (info: SessionInfo, prev: SessionState | null) => void = () => {}
 
-  constructor(private hookPort: number) {
+  // idPrefix はウィンドウごとに変えることで、複数ウィンドウ間でも
+  // セッション ID(= hooks 通知の宛先)が衝突しないようにする
+  constructor(
+    private hookPort: number,
+    private idPrefix = 's',
+  ) {
     setInterval(() => this.emitIfChanged(false), TICK_MS).unref()
     // シェルの現在ディレクトリを追跡してカードタイトルに反映する
     setInterval(() => {
@@ -89,7 +94,7 @@ export class SessionManager {
 
   create(): SessionInfo {
     const index = ++this.counter
-    const id = `s${index}`
+    const id = `${this.idPrefix}${index}`
     const shell = process.env.SHELL || '/bin/zsh'
     const env: Record<string, string> = {}
     for (const [k, v] of Object.entries(process.env)) {

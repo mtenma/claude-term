@@ -1,4 +1,4 @@
-import {app, BrowserWindow, dialog, ipcMain, Notification} from 'electron'
+import {app, BrowserWindow, dialog, ipcMain, Menu, Notification} from 'electron'
 import * as path from 'node:path'
 import {CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
 import {SessionManager} from './sessions'
@@ -6,86 +6,97 @@ import {startHookServer} from './hookServer'
 import {ensureClaudeHooks} from './claudeHooks'
 import {maybeRunDevshot} from './devshot'
 
-let win: BrowserWindow | null = null
-let sm: SessionManager | null = null
-let quitConfirmed = false
-let shotMode = false
-
-function send(channel: string, payload: unknown): void {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+// 1ウィンドウ = 1 SessionManager。webContents.id をキーに対応関係を持つ
+interface WindowContext {
+  win: BrowserWindow
+  sm: SessionManager
+  closeConfirmed: boolean
 }
 
-function updateDockBadge(update: SessionsUpdate): void {
-  const n = update.sessions.filter((s) => s.state === 'attention').length
+const contexts = new Map<number, WindowContext>()
+let windowSeq = 0
+let hookPort = 0
+let shotMode = false
+
+function send(ctx: WindowContext, channel: string, payload: unknown): void {
+  if (!ctx.win.isDestroyed()) ctx.win.webContents.send(channel, payload)
+}
+
+function smOf(sender: {id: number}): SessionManager | null {
+  return contexts.get(sender.id)?.sm ?? null
+}
+
+function updateDockBadge(): void {
+  let n = 0
+  for (const ctx of contexts.values()) {
+    n += ctx.sm.currentUpdate().sessions.filter((s) => s.state === 'attention').length
+  }
   app.dock?.setBadge(n > 0 ? String(n) : '')
 }
 
-function notifyAttention(info: SessionInfo): void {
+function notifyAttention(ctx: WindowContext, info: SessionInfo): void {
   if (shotMode) return
   // そのセッションを今まさに見ているなら通知しない
-  if (win?.isFocused() && sm?.activeId === info.id) return
+  if (ctx.win.isFocused() && ctx.sm.activeId === info.id) return
   if (!Notification.isSupported()) return
   const notif = new Notification({
     title: `${info.title} — 承認待ち`,
     body: info.attentionMessage ?? 'Claude Code が承認または入力を待っています',
   })
   notif.on('click', () => {
-    if (win) {
-      win.show()
-      win.focus()
+    if (!ctx.win.isDestroyed()) {
+      ctx.win.show()
+      ctx.win.focus()
+      ctx.sm.attach(info.id)
     }
-    sm?.attach(info.id)
   })
   notif.show()
 }
 
-function registerIpc(manager: SessionManager): void {
-  ipcMain.handle(CH.sessionCreate, () => {
-    const info = manager.create()
-    manager.attach(info.id)
+function registerIpc(): void {
+  ipcMain.handle(CH.sessionCreate, (e) => {
+    const sm = smOf(e.sender)
+    if (!sm) return null
+    const info = sm.create()
+    sm.attach(info.id)
     return info
   })
-  ipcMain.handle(CH.sessionKill, (_e, id: string) => {
-    manager.kill(id)
+  ipcMain.handle(CH.sessionKill, (e, id: string) => {
+    smOf(e.sender)?.kill(id)
   })
-  ipcMain.handle(CH.sessionsRequest, () => manager.currentUpdate())
-  ipcMain.on(CH.sessionAttach, (_e, id: string) => manager.attach(id))
-  ipcMain.on(CH.termIn, (_e, data: string) => manager.inputToActive(data))
-  ipcMain.on(CH.termResize, (_e, size: {cols: number; rows: number}) =>
-    manager.resize(size.cols, size.rows),
+  ipcMain.handle(
+    CH.sessionsRequest,
+    (e): SessionsUpdate => smOf(e.sender)?.currentUpdate() ?? {sessions: [], activeId: null},
   )
-  ipcMain.on(CH.termAck, (_e, bytes: number) => manager.ack(bytes))
+  ipcMain.on(CH.sessionAttach, (e, id: string) => smOf(e.sender)?.attach(id))
+  ipcMain.on(CH.termIn, (e, data: string) => smOf(e.sender)?.inputToActive(data))
+  ipcMain.on(CH.termResize, (e, size: {cols: number; rows: number}) =>
+    smOf(e.sender)?.resize(size.cols, size.rows),
+  )
+  ipcMain.on(CH.termAck, (e, bytes: number) => smOf(e.sender)?.ack(bytes))
 }
 
-function confirmClose(window: BrowserWindow): void {
+function confirmClose(ctx: WindowContext): void {
   void dialog
-    .showMessageBox(window, {
+    .showMessageBox(ctx.win, {
       type: 'warning',
-      buttons: ['終了', 'キャンセル'],
+      buttons: ['閉じる', 'キャンセル'],
       defaultId: 1,
       cancelId: 1,
       message: '実行中のセッションがあります',
-      detail: '終了するとすべてのセッションが閉じられます。',
+      detail: 'このウィンドウを閉じると、中のすべてのセッションが終了します。',
     })
     .then((r) => {
       if (r.response === 0) {
-        quitConfirmed = true
-        window.close()
+        ctx.closeConfirmed = true
+        ctx.win.close()
       }
     })
 }
 
-async function main(): Promise<void> {
-  await app.whenReady()
-
-  shotMode = Boolean(process.env.CLAUDE_TERM_SCREENSHOT)
-  const port = await startHookServer({
-    onState: (id, state, rawBody) => sm?.setHookState(id, state, rawBody),
-    onStatus: (id, rawJson) => sm?.applyStatus(id, rawJson) ?? null,
-  })
-  sm = new SessionManager(port)
-
-  win = new BrowserWindow({
+async function createWindow(): Promise<WindowContext> {
+  const sm = new SessionManager(hookPort, `w${++windowSeq}s`)
+  const win = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 960,
@@ -101,44 +112,100 @@ async function main(): Promise<void> {
       backgroundThrottling: !shotMode,
     },
   })
+  const ctx: WindowContext = {win, sm, closeConfirmed: false}
+  const wcId = win.webContents.id
+  contexts.set(wcId, ctx)
 
   sm.onSessionsUpdate = (u) => {
-    send(CH.sessionsUpdate, u)
-    updateDockBadge(u)
+    send(ctx, CH.sessionsUpdate, u)
+    updateDockBadge()
   }
-  sm.onTermOut = (p) => send(CH.termOut, p)
+  sm.onTermOut = (p) => send(ctx, CH.termOut, p)
   sm.onStateChange = (info) => {
-    if (info.state === 'attention') notifyAttention(info)
+    if (info.state === 'attention') notifyAttention(ctx, info)
   }
-  registerIpc(sm)
 
-  win.once('ready-to-show', () => win?.show())
+  win.once('ready-to-show', () => win.show())
   win.on('close', (e) => {
-    if (!quitConfirmed && !shotMode && sm?.hasLive() && win) {
+    if (!ctx.closeConfirmed && !shotMode && sm.hasLive()) {
       e.preventDefault()
-      confirmClose(win)
+      confirmClose(ctx)
     }
   })
   win.on('closed', () => {
-    win = null
+    contexts.delete(wcId)
+    sm.disposeAll()
+    updateDockBadge()
   })
 
   await win.loadFile(path.join(__dirname, '../renderer/index.html'))
+  return ctx
+}
 
+function setupMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {role: 'appMenu'},
+    {
+      label: 'ファイル',
+      submenu: [
+        {
+          label: '新規ウィンドウ',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => void createWindow(),
+        },
+        {type: 'separator'},
+        {role: 'close', label: 'ウィンドウを閉じる'},
+      ],
+    },
+    {role: 'editMenu', label: '編集'},
+    {role: 'viewMenu', label: '表示'},
+    {role: 'windowMenu', label: 'ウィンドウ'},
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  app.dock?.setMenu(
+    Menu.buildFromTemplate([{label: '新規ウィンドウ', click: () => void createWindow()}]),
+  )
+}
+
+async function main(): Promise<void> {
+  await app.whenReady()
+
+  shotMode = Boolean(process.env.CLAUDE_TERM_SCREENSHOT)
+  // hook サーバはアプリで1つ。セッション ID がウィンドウ間で一意なので、
+  // 全ウィンドウの SessionManager へ配れば持ち主だけが反応する
+  hookPort = await startHookServer({
+    onState: (id, state, rawBody) => {
+      for (const ctx of contexts.values()) ctx.sm.setHookState(id, state, rawBody)
+    },
+    onStatus: (id, rawJson) => {
+      for (const ctx of contexts.values()) {
+        const line = ctx.sm.applyStatus(id, rawJson)
+        if (line !== null) return line
+      }
+      return null
+    },
+  })
+  registerIpc()
+  setupMenu()
+
+  const first = await createWindow()
   if (shotMode) {
-    maybeRunDevshot(win, sm)
+    maybeRunDevshot(first.win, first.sm)
   } else {
-    await ensureClaudeHooks(win)
+    await ensureClaudeHooks(first.win)
   }
 }
 
+app.on('activate', () => {
+  if (app.isReady() && contexts.size === 0) void createWindow()
+})
+
 app.on('window-all-closed', () => {
-  sm?.disposeAll()
   app.quit()
 })
 
 app.on('will-quit', () => {
-  sm?.disposeAll()
+  for (const ctx of contexts.values()) ctx.sm.disposeAll()
 })
 
 void main()
