@@ -1,4 +1,5 @@
 import {execFile} from 'node:child_process'
+import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import {spawn, type IPty} from 'node-pty'
@@ -105,11 +106,15 @@ export class SessionManager {
     env.CLAUDE_TERM_SESSION = id
     env.CLAUDE_TERM_PORT = String(this.hookPort)
 
+    // アクティブセッションと同じディレクトリで開く(無ければホーム)
+    const active = this.activeId ? this.sessions.get(this.activeId) : undefined
+    let cwd = active && !active.exited ? active.cwd : os.homedir()
+    if (!fs.existsSync(cwd)) cwd = os.homedir()
     const pty = spawn(shell, ['-l'], {
       name: 'xterm-256color',
       cols: this.cols,
       rows: this.rows,
-      cwd: os.homedir(),
+      cwd,
       env,
     })
     const term = new Terminal({
@@ -125,7 +130,7 @@ export class SessionManager {
     const session: Session = {
       id,
       index,
-      cwd: os.homedir(),
+      cwd,
       pty,
       term,
       serialize,

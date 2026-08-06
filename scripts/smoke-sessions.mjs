@@ -110,6 +110,16 @@ check(
   `exit したセッションは自動で閉じる (remaining=${remaining.join(',')})`,
 )
 
+// +new はアクティブセッションの現在ディレクトリで開くこと
+sm.writeTo(a.id, 'cd /private/tmp\r')
+await sleep(3000) // lsof ポーリング(2秒周期)による cwd 追跡を待つ
+const c = sm.create()
+const cInfo = sm.currentUpdate().sessions.find((x) => x.id === c.id)
+check(
+  (cInfo?.cwd ?? '').includes('/private/tmp'),
+  `+new はアクティブセッションのディレクトリで開く (cwd=${cInfo?.cwd})`,
+)
+
 sm.disposeAll()
 clearTimeout(watchdog)
 console.log(pass ? 'SMOKE PASS' : 'SMOKE FAIL')
