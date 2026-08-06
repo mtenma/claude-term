@@ -139,7 +139,21 @@ function buildCard(s: SessionInfo): HTMLElement {
   preview.className = 'card-preview'
   preview.textContent = s.preview.join('\n')
 
-  card.append(head, preview)
+  card.append(head)
+  if (s.metrics && (s.metrics.model || s.metrics.contextPct !== undefined || s.metrics.costUsd !== undefined)) {
+    const metrics = document.createElement('div')
+    metrics.className = 'card-metrics'
+    const bits: string[] = []
+    if (s.metrics.model) bits.push(s.metrics.model)
+    if (s.metrics.contextPct !== undefined) bits.push(`コンテキスト残${s.metrics.contextPct}%`)
+    if (s.metrics.costUsd !== undefined) bits.push(`$${s.metrics.costUsd.toFixed(2)}`)
+    metrics.textContent = bits.join(' · ')
+    if (s.metrics.contextPct !== undefined && s.metrics.contextPct <= 20) {
+      metrics.classList.add('warn')
+    }
+    card.append(metrics)
+  }
+  card.append(preview)
   card.addEventListener('click', () => {
     if (s.id === activeId) {
       term.focus()

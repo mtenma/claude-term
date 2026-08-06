@@ -242,6 +242,19 @@ body.resizing {
   color: var(--text);
 }
 
+.card-metrics {
+  margin-top: 5px;
+  font-size: 10px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-metrics.warn {
+  color: var(--orange);
+}
+
 .card-preview {
   margin: 8px 0 2px;
   height: calc(5 * 1.5 * 10px);

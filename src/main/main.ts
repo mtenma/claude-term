@@ -1,6 +1,6 @@
-import {app, BrowserWindow, dialog, ipcMain} from 'electron'
+import {app, BrowserWindow, dialog, ipcMain, Notification} from 'electron'
 import * as path from 'node:path'
-import {CH} from '../shared/types'
+import {CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
 import {SessionManager} from './sessions'
 import {startHookServer} from './hookServer'
 import {ensureClaudeHooks} from './claudeHooks'
@@ -9,9 +9,34 @@ import {maybeRunDevshot} from './devshot'
 let win: BrowserWindow | null = null
 let sm: SessionManager | null = null
 let quitConfirmed = false
+let shotMode = false
 
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+}
+
+function updateDockBadge(update: SessionsUpdate): void {
+  const n = update.sessions.filter((s) => s.state === 'attention').length
+  app.dock?.setBadge(n > 0 ? String(n) : '')
+}
+
+function notifyAttention(info: SessionInfo): void {
+  if (shotMode) return
+  // そのセッションを今まさに見ているなら通知しない
+  if (win?.isFocused() && sm?.activeId === info.id) return
+  if (!Notification.isSupported()) return
+  const notif = new Notification({
+    title: `${info.title} — 承認待ち`,
+    body: 'Claude Code が承認または入力を待っています',
+  })
+  notif.on('click', () => {
+    if (win) {
+      win.show()
+      win.focus()
+    }
+    sm?.attach(info.id)
+  })
+  notif.show()
 }
 
 function registerIpc(manager: SessionManager): void {
@@ -53,8 +78,11 @@ function confirmClose(window: BrowserWindow): void {
 async function main(): Promise<void> {
   await app.whenReady()
 
-  const shotMode = Boolean(process.env.CLAUDE_TERM_SCREENSHOT)
-  const port = await startHookServer((id, state) => sm?.setHookState(id, state))
+  shotMode = Boolean(process.env.CLAUDE_TERM_SCREENSHOT)
+  const port = await startHookServer({
+    onState: (id, state) => sm?.setHookState(id, state),
+    onStatus: (id, rawJson) => sm?.applyStatus(id, rawJson) ?? null,
+  })
   sm = new SessionManager(port)
 
   win = new BrowserWindow({
@@ -74,8 +102,14 @@ async function main(): Promise<void> {
     },
   })
 
-  sm.onSessionsUpdate = (u) => send(CH.sessionsUpdate, u)
+  sm.onSessionsUpdate = (u) => {
+    send(CH.sessionsUpdate, u)
+    updateDockBadge(u)
+  }
   sm.onTermOut = (p) => send(CH.termOut, p)
+  sm.onStateChange = (info) => {
+    if (info.state === 'attention') notifyAttention(info)
+  }
   registerIpc(sm)
 
   win.once('ready-to-show', () => win?.show())

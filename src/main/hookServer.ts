@@ -1,19 +1,56 @@
 import * as http from 'node:http'
 
-const ROUTE = /^\/state\/([A-Za-z0-9_-]+)\/(running|attention|idle|clear)$/
+const STATE_RE = /^\/state\/([A-Za-z0-9_-]+)\/(running|attention|idle|clear)$/
+const STATUS_RE = /^\/status\/([A-Za-z0-9_-]+)$/
+const MAX_BODY = 64 * 1024
+
+export interface HookServerHandlers {
+  /** hooks からの状態遷移通知 */
+  onState: (sessionId: string, state: string) => void
+  /** statusLine スクリプトからの JSON 転送。表示用の1行を返す(なければ null) */
+  onStatus: (sessionId: string, rawJson: string) => string | null
+}
 
 /**
- * Claude Code の hooks から状態通知を受ける 127.0.0.1 限定の HTTP サーバ。
+ * Claude Code の hooks / statusLine から通知を受ける 127.0.0.1 限定の HTTP サーバ。
  * ポートは動的割当てで、各セッションの PTY 環境変数 CLAUDE_TERM_PORT として渡す。
  */
-export function startHookServer(
-  onState: (sessionId: string, state: string) => void,
-): Promise<number> {
+export function startHookServer(handlers: HookServerHandlers): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
-      const m = req.method === 'POST' ? req.url?.match(ROUTE) : null
-      if (m) onState(m[1], m[2])
-      res.statusCode = m ? 200 : 404
+      if (req.method !== 'POST') {
+        res.statusCode = 404
+        res.end()
+        return
+      }
+      const stateMatch = req.url?.match(STATE_RE)
+      if (stateMatch) {
+        handlers.onState(stateMatch[1], stateMatch[2])
+        res.statusCode = 200
+        res.end()
+        return
+      }
+      const statusMatch = req.url?.match(STATUS_RE)
+      if (statusMatch) {
+        let body = ''
+        let overflow = false
+        req.on('data', (chunk: Buffer) => {
+          body += chunk.toString('utf8')
+          if (body.length > MAX_BODY) {
+            overflow = true
+            req.destroy()
+          }
+        })
+        req.on('end', () => {
+          if (overflow) return
+          const line = handlers.onStatus(statusMatch[1], body)
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+          res.end(line ?? '')
+        })
+        return
+      }
+      res.statusCode = 404
       res.end()
     })
     server.on('error', reject)

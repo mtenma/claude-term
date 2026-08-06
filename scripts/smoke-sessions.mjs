@@ -101,6 +101,15 @@ check(
   `リサイズ後も待機セッションは待機のまま (before=${stateBefore} after=${stateAfter})`,
 )
 
+// 正常終了(exit 0)したシェルはセッションごと自動で閉じること
+sm.writeTo(b.id, 'exit\r')
+await sleep(1200)
+const remaining = sm.currentUpdate().sessions.map((x) => x.id)
+check(
+  !remaining.includes(b.id) && remaining.includes(a.id),
+  `exit したセッションは自動で閉じる (remaining=${remaining.join(',')})`,
+)
+
 sm.disposeAll()
 clearTimeout(watchdog)
 console.log(pass ? 'SMOKE PASS' : 'SMOKE FAIL')

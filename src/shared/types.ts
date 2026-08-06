@@ -7,6 +7,8 @@ export interface SessionInfo {
   cwd: string
   state: SessionState
   preview: string[]
+  /** statusLine 連携で得た Claude Code セッションの情報(未取得なら null) */
+  metrics: {model?: string; contextPct?: number; costUsd?: number} | null
 }
 
 export interface SessionsUpdate {

@@ -1,7 +1,7 @@
 {
   "name": "claude-term",
   "productName": "Claude Term",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Code 専用ターミナル — 複数セッションを1ウィンドウで管理",
   "author": "Masayuki Tenma <tenma@sabira.jp>",
   "private": true,

@@ -41,6 +41,7 @@ interface Session {
   bellAt: number
   paused: boolean
   lastLoggedState: SessionState | null
+  metrics: {model?: string; contextPct?: number; costUsd?: number} | null
 }
 
 export class SessionManager {
@@ -56,6 +57,8 @@ export class SessionManager {
 
   onSessionsUpdate: (update: SessionsUpdate) => void = () => {}
   onTermOut: (payload: TermOut) => void = () => {}
+  /** 状態が変化した瞬間に呼ばれる(通知・バッジ用) */
+  onStateChange: (info: SessionInfo, prev: SessionState | null) => void = () => {}
 
   constructor(private hookPort: number) {
     setInterval(() => this.emitIfChanged(false), TICK_MS).unref()
@@ -119,6 +122,7 @@ export class SessionManager {
       bellAt: 0,
       paused: false,
       lastLoggedState: null,
+      metrics: null,
     }
     this.enableAnswerback(session)
     term.onBell(() => {
@@ -142,10 +146,16 @@ export class SessionManager {
       return true
     })
     pty.onData((data) => this.handlePtyData(session, data))
-    pty.onExit(() => {
+    pty.onExit(({exitCode}) => {
       session.exited = true
       this.disableAnswerback(session)
-      this.emitIfChanged(true)
+      if (exitCode === 0) {
+        // 正常終了は通常のターミナルと同様にセッションごと閉じる
+        this.removeSession(session.id)
+      } else {
+        // 異常終了は出力を確認できるよう「終了」カードとして残す
+        this.emitIfChanged(true)
+      }
     })
 
     this.sessions.set(id, session)
@@ -214,11 +224,31 @@ export class SessionManager {
         // 既に死んでいる場合は無視
       }
     }
+    this.removeSession(id)
+  }
+
+  private removeSession(id: string): void {
+    const s = this.sessions.get(id)
+    if (!s) return
     this.disableAnswerback(s)
     s.term.dispose()
     this.sessions.delete(id)
-    if (this.activeId === id) this.activeId = null
+    if (this.activeId === id) {
+      this.activeId = null
+      const next = this.neighborOf(s.index)
+      if (next) this.attach(next.id)
+    }
     this.emitIfChanged(true)
+  }
+
+  /** 削除されたセッションの近傍(次の若い番号、無ければ手前)を返す */
+  private neighborOf(index: number): Session | null {
+    let before: Session | null = null
+    for (const s of this.sessions.values()) {
+      if (s.index > index) return s
+      before = s
+    }
+    return before
   }
 
   resize(cols: number, rows: number): void {
@@ -253,9 +283,44 @@ export class SessionManager {
   setHookState(id: string, state: string): void {
     const s = this.sessions.get(id)
     if (!s) return
-    s.hookState = state === 'clear' ? null : (state as HookState)
+    if (state === 'clear') {
+      s.hookState = null
+      s.metrics = null // claude セッション終了とともにメトリクスも消す
+    } else {
+      s.hookState = state as HookState
+    }
     s.hookStateAt = Date.now()
     this.emitIfChanged(true)
+  }
+
+  /**
+   * statusLine スクリプトから転送された Claude Code のセッション情報 JSON を取り込み、
+   * claude の画面に表示するステータス行(整形済み文字列)を返す。
+   */
+  applyStatus(id: string, rawJson: string): string | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    let data: Record<string, any>
+    try {
+      data = JSON.parse(rawJson) as Record<string, any>
+    } catch {
+      return null
+    }
+    const model =
+      typeof data?.model?.display_name === 'string' ? (data.model.display_name as string) : undefined
+    const cw = data?.context_window
+    let contextPct: number | undefined
+    if (typeof cw?.remaining_percentage === 'number') contextPct = Math.round(cw.remaining_percentage)
+    else if (typeof cw?.used_percentage === 'number') contextPct = Math.round(100 - cw.used_percentage)
+    const cost = data?.cost?.total_cost_usd
+    const costUsd = typeof cost === 'number' ? cost : undefined
+    s.metrics = {model, contextPct, costUsd}
+    this.emitIfChanged(true)
+    const parts: string[] = []
+    if (model) parts.push(model)
+    if (contextPct !== undefined) parts.push(`コンテキスト残り${contextPct}%`)
+    if (costUsd !== undefined) parts.push(`$${costUsd.toFixed(2)}`)
+    return parts.join(' · ')
   }
 
   hasLive(): boolean {
@@ -395,6 +460,7 @@ export class SessionManager {
       cwd: `ターミナル${s.index} — ${abbrev}`,
       state: this.stateOf(s),
       preview: this.previewOf(s),
+      metrics: s.metrics,
     }
   }
 
@@ -404,7 +470,9 @@ export class SessionManager {
       const s = this.sessions.get(info.id)
       if (s && s.lastLoggedState !== info.state) {
         console.log(`[state] ${info.id} ${s.lastLoggedState ?? 'new'} -> ${info.state}`)
+        const prev = s.lastLoggedState
         s.lastLoggedState = info.state
+        this.onStateChange(info, prev)
       }
     }
     const key = JSON.stringify(update)

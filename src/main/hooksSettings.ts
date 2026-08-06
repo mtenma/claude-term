@@ -3,6 +3,8 @@
 
 // このマーカーを含むコマンドを claude-term 管理の hook とみなす(冪等追記・更新・削除の目印)
 export const MARKER = 'claude-term-state-hook'
+// statusLine スクリプトのパスに含まれるマーカー(自前設定の判別用)
+export const SL_MARKER = 'claude-term-statusline'
 
 interface HookCommand {
   type: string
@@ -28,8 +30,15 @@ export const DESIRED: Array<{event: string; matcher?: string; state: string}> = 
   {event: 'SessionEnd', state: 'clear'},
 ]
 
-/** 既存 settings から claude-term の hook を全て取り除いた上で最新版を追記する(冪等) */
-export function withClaudeTermHooks(settings: Record<string, unknown>): Record<string, unknown> {
+/**
+ * 既存 settings から claude-term の hook を全て取り除いた上で最新版を追記する(冪等)。
+ * statuslineCommand を渡すと statusLine 設定も追加する。ただしユーザー自身の
+ * statusLine が既に設定されている場合は一切触れない(claude-term 由来のものだけ更新)。
+ */
+export function withClaudeTermHooks(
+  settings: Record<string, unknown>,
+  statuslineCommand?: string,
+): Record<string, unknown> {
   const out = structuredClone(settings)
   const hooks = (typeof out.hooks === 'object' && out.hooks !== null ? out.hooks : {}) as Record<
     string,
@@ -54,6 +63,13 @@ export function withClaudeTermHooks(settings: Record<string, unknown>): Record<s
     const entry: HookEntry = {hooks: [{type: 'command', command: hookCommand(d.state)}]}
     if (d.matcher) entry.matcher = d.matcher
     arr.push(entry)
+  }
+  if (statuslineCommand) {
+    const existing = out.statusLine as {type?: string; command?: string} | undefined
+    const isOurs = typeof existing?.command === 'string' && existing.command.includes(SL_MARKER)
+    if (!existing || isOurs) {
+      out.statusLine = {type: 'command', command: statuslineCommand}
+    }
   }
   return out
 }

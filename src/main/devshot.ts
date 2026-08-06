@@ -44,10 +44,11 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
       sm.writeTo(a.id, 'while true; do date; sleep 0.4; done\r')
       sm.writeTo(
         b.id,
-        'sleep 1; curl -s -m 1 -X POST "http://127.0.0.1:$CLAUDE_TERM_PORT/state/$CLAUDE_TERM_SESSION/attention"\r',
+        'sleep 1; curl -s -m 1 -X POST "http://127.0.0.1:$CLAUDE_TERM_PORT/state/$CLAUDE_TERM_SESSION/attention"; ' +
+          `curl -s -m 1 -X POST -H 'Content-Type: application/json' --data '{"model":{"display_name":"Opus 4.6"},"context_window":{"remaining_percentage":41.5},"cost":{"total_cost_usd":1.2345}}' "http://127.0.0.1:$CLAUDE_TERM_PORT/status/$CLAUDE_TERM_SESSION" > /dev/null\r`,
       )
       sm.writeTo(c.id, 'cd /private/tmp; echo 静止セッション\r')
-      sm.writeTo(d.id, 'exit\r')
+      sm.writeTo(d.id, 'exit 1\r') // 異常終了(正常 exit はカードが自動で閉じるため)
     })
   }
 
