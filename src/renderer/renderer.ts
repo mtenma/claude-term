@@ -140,6 +140,12 @@ function buildCard(s: SessionInfo): HTMLElement {
   preview.textContent = s.preview.join('\n')
 
   card.append(head)
+  if (s.state === 'attention' && s.attentionMessage) {
+    const msg = document.createElement('div')
+    msg.className = 'card-attn-msg'
+    msg.textContent = s.attentionMessage
+    card.append(msg)
+  }
   if (s.metrics && (s.metrics.model || s.metrics.contextPct !== undefined || s.metrics.costUsd !== undefined)) {
     const metrics = document.createElement('div')
     metrics.className = 'card-metrics'

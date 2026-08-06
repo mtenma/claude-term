@@ -18,17 +18,27 @@ interface HookEntry {
   [k: string]: unknown
 }
 
-export const hookCommand = (state: string): string =>
-  `[ -n "$CLAUDE_TERM_PORT" ] && curl -s -m 1 -X POST "http://127.0.0.1:$CLAUDE_TERM_PORT/state/$CLAUDE_TERM_SESSION/${state}" >/dev/null 2>&1 || true # ${MARKER}`
+export const hookCommand = (state: string, withBody = false): string =>
+  `[ -n "$CLAUDE_TERM_PORT" ] && curl -s -m 1 -X POST ${
+    withBody ? `--data-binary @- -H 'Content-Type: application/json' ` : ''
+  }"http://127.0.0.1:$CLAUDE_TERM_PORT/state/$CLAUDE_TERM_SESSION/${state}" >/dev/null 2>&1 || true # ${MARKER}`
 
-export const DESIRED: Array<{event: string; matcher?: string; state: string}> = [
-  {event: 'UserPromptSubmit', state: 'running'},
-  {event: 'PreToolUse', state: 'running'},
-  {event: 'PostToolUse', state: 'running'},
-  {event: 'Notification', matcher: 'permission_prompt|idle_prompt', state: 'attention'},
-  {event: 'Stop', state: 'idle'},
-  {event: 'SessionEnd', state: 'clear'},
-]
+// idle_prompt(応答完了後の放置)は意図的に登録しない。
+// 放置は「待機(グレー)」のままにし、オレンジは「ユーザーの操作で止まっている」だけに絞る。
+export const DESIRED: Array<{event: string; matcher?: string; state: string; withBody?: boolean}> =
+  [
+    {event: 'UserPromptSubmit', state: 'running'},
+    {event: 'PreToolUse', state: 'running'},
+    {event: 'PostToolUse', state: 'running'},
+    {
+      event: 'Notification',
+      matcher: 'permission_prompt|elicitation_dialog|agent_needs_input',
+      state: 'attention',
+      withBody: true, // 通知の message(何の承認を求めているか)を転送する
+    },
+    {event: 'Stop', state: 'idle'},
+    {event: 'SessionEnd', state: 'clear'},
+  ]
 
 /**
  * 既存 settings から claude-term の hook を全て取り除いた上で最新版を追記する(冪等)。
@@ -60,7 +70,9 @@ export function withClaudeTermHooks(
   }
   for (const d of DESIRED) {
     const arr = (hooks[d.event] ??= [])
-    const entry: HookEntry = {hooks: [{type: 'command', command: hookCommand(d.state)}]}
+    const entry: HookEntry = {
+      hooks: [{type: 'command', command: hookCommand(d.state, d.withBody)}],
+    }
     if (d.matcher) entry.matcher = d.matcher
     arr.push(entry)
   }

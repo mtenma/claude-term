@@ -55,6 +55,14 @@ check(
   eq(fromEmpty.statusLine, {type: 'command', command: SL_PATH}),
   'statusLine が未設定なら claude-term のスクリプトを設定する',
 )
+const notifMatcher = fromEmpty.hooks.Notification?.[0]?.matcher ?? ''
+check(
+  notifMatcher.includes('permission_prompt') &&
+    notifMatcher.includes('elicitation_dialog') &&
+    notifMatcher.includes('agent_needs_input') &&
+    !notifMatcher.includes('idle_prompt'),
+  'Notification は承認/質問系のみ対象で idle_prompt を含まない',
+)
 
 // 2) 冪等: 2回適用しても変化しない
 check(

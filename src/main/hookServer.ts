@@ -5,8 +5,8 @@ const STATUS_RE = /^\/status\/([A-Za-z0-9_-]+)$/
 const MAX_BODY = 64 * 1024
 
 export interface HookServerHandlers {
-  /** hooks からの状態遷移通知 */
-  onState: (sessionId: string, state: string) => void
+  /** hooks からの状態遷移通知(rawBody は hook の stdin JSON、無ければ空文字) */
+  onState: (sessionId: string, state: string, rawBody: string) => void
   /** statusLine スクリプトからの JSON 転送。表示用の1行を返す(なければ null) */
   onStatus: (sessionId: string, rawJson: string) => string | null
 }
@@ -24,34 +24,33 @@ export function startHookServer(handlers: HookServerHandlers): Promise<number> {
         return
       }
       const stateMatch = req.url?.match(STATE_RE)
-      if (stateMatch) {
-        handlers.onState(stateMatch[1], stateMatch[2])
-        res.statusCode = 200
+      const statusMatch = req.url?.match(STATUS_RE)
+      if (!stateMatch && !statusMatch) {
+        res.statusCode = 404
         res.end()
         return
       }
-      const statusMatch = req.url?.match(STATUS_RE)
-      if (statusMatch) {
-        let body = ''
-        let overflow = false
-        req.on('data', (chunk: Buffer) => {
-          body += chunk.toString('utf8')
-          if (body.length > MAX_BODY) {
-            overflow = true
-            req.destroy()
-          }
-        })
-        req.on('end', () => {
-          if (overflow) return
+      let body = ''
+      let overflow = false
+      req.on('data', (chunk: Buffer) => {
+        body += chunk.toString('utf8')
+        if (body.length > MAX_BODY) {
+          overflow = true
+          req.destroy()
+        }
+      })
+      req.on('end', () => {
+        if (overflow) return
+        res.statusCode = 200
+        if (stateMatch) {
+          handlers.onState(stateMatch[1], stateMatch[2], body)
+          res.end()
+        } else if (statusMatch) {
           const line = handlers.onStatus(statusMatch[1], body)
-          res.statusCode = 200
           res.setHeader('Content-Type', 'text/plain; charset=utf-8')
           res.end(line ?? '')
-        })
-        return
-      }
-      res.statusCode = 404
-      res.end()
+        }
+      })
     })
     server.on('error', reject)
     server.unref()

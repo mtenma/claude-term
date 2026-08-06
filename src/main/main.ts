@@ -27,7 +27,7 @@ function notifyAttention(info: SessionInfo): void {
   if (!Notification.isSupported()) return
   const notif = new Notification({
     title: `${info.title} — 承認待ち`,
-    body: 'Claude Code が承認または入力を待っています',
+    body: info.attentionMessage ?? 'Claude Code が承認または入力を待っています',
   })
   notif.on('click', () => {
     if (win) {
@@ -80,7 +80,7 @@ async function main(): Promise<void> {
 
   shotMode = Boolean(process.env.CLAUDE_TERM_SCREENSHOT)
   const port = await startHookServer({
-    onState: (id, state) => sm?.setHookState(id, state),
+    onState: (id, state, rawBody) => sm?.setHookState(id, state, rawBody),
     onStatus: (id, rawJson) => sm?.applyStatus(id, rawJson) ?? null,
   })
   sm = new SessionManager(port)

@@ -9,6 +9,8 @@ export interface SessionInfo {
   preview: string[]
   /** statusLine 連携で得た Claude Code セッションの情報(未取得なら null) */
   metrics: {model?: string; contextPct?: number; costUsd?: number} | null
+  /** 承認待ちのとき、何の承認を求めているかのメッセージ(不明なら null) */
+  attentionMessage: string | null
 }
 
 export interface SessionsUpdate {

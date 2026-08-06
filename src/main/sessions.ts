@@ -22,6 +22,21 @@ const LOW_WATER = 250_000
 
 type HookState = 'running' | 'attention' | 'idle'
 
+/** Notification hook の stdin JSON から通知メッセージを取り出す */
+function extractHookMessage(rawBody: string): string | null {
+  if (!rawBody) return null
+  try {
+    const data = JSON.parse(rawBody) as Record<string, unknown>
+    const message = data.message
+    if (typeof message === 'string' && message.trim() !== '') {
+      return message.trim().slice(0, 200)
+    }
+  } catch {
+    // JSON でなければ無視
+  }
+  return null
+}
+
 interface Session {
   id: string
   index: number
@@ -42,6 +57,7 @@ interface Session {
   paused: boolean
   lastLoggedState: SessionState | null
   metrics: {model?: string; contextPct?: number; costUsd?: number} | null
+  attentionMessage: string | null
 }
 
 export class SessionManager {
@@ -123,6 +139,7 @@ export class SessionManager {
       paused: false,
       lastLoggedState: null,
       metrics: null,
+      attentionMessage: null,
     }
     this.enableAnswerback(session)
     term.onBell(() => {
@@ -280,14 +297,16 @@ export class SessionManager {
     }
   }
 
-  setHookState(id: string, state: string): void {
+  setHookState(id: string, state: string, rawBody = ''): void {
     const s = this.sessions.get(id)
     if (!s) return
     if (state === 'clear') {
       s.hookState = null
       s.metrics = null // claude セッション終了とともにメトリクスも消す
+      s.attentionMessage = null
     } else {
       s.hookState = state as HookState
+      s.attentionMessage = state === 'attention' ? extractHookMessage(rawBody) : null
     }
     s.hookStateAt = Date.now()
     this.emitIfChanged(true)
@@ -461,6 +480,7 @@ export class SessionManager {
       state: this.stateOf(s),
       preview: this.previewOf(s),
       metrics: s.metrics,
+      attentionMessage: s.attentionMessage,
     }
   }
 
