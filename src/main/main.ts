@@ -2,6 +2,7 @@ import {app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell} from 'el
 import * as path from 'node:path'
 import {CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
 import {SessionManager, whenAllPtysExited} from './sessions'
+import {getAppearance, setAppearance} from './settings'
 import {startHookServer} from './hookServer'
 import {ensureClaudeHooks} from './claudeHooks'
 import {maybeRunDevshot} from './devshot'
@@ -76,6 +77,12 @@ function registerIpc(): void {
     // ターミナル出力由来の文字列なので http(s) 以外は開かない
     if (typeof url === 'string' && /^https?:\/\//.test(url)) void shell.openExternal(url)
   })
+  ipcMain.handle(CH.settingsGet, () => getAppearance())
+  ipcMain.on(CH.settingsSet, (_e, raw: unknown) => {
+    const a = setAppearance(raw)
+    // 送信元も含む全ウィンドウへ正規化済みの値を配って同期する
+    for (const ctx of contexts.values()) send(ctx, CH.settingsUpdate, a)
+  })
 }
 
 function confirmClose(ctx: WindowContext): void {
@@ -104,7 +111,10 @@ async function createWindow(): Promise<WindowContext> {
     minWidth: 960,
     minHeight: 600,
     title: 'Claude Term',
-    backgroundColor: '#0f0f11',
+    // 外観設定の「背景の透過」を有効にするため常に透過ウィンドウで作る
+    // (transparent は生成時のみ指定可能。不透明度は CSS 側で制御する)
+    transparent: true,
+    backgroundColor: '#00000000',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
@@ -173,6 +183,14 @@ function setupMenu(): void {
       label: app.name,
       submenu: [
         {role: 'about', label: 'Claude Term について'},
+        {type: 'separator'},
+        {
+          label: '設定…',
+          accelerator: 'CmdOrCtrl+,',
+          click: (_item, win) => {
+            if (win instanceof BrowserWindow) win.webContents.send(CH.editOpenSettings)
+          },
+        },
         {type: 'separator'},
         {role: 'hide', label: 'Claude Term を隠す'},
         {role: 'hideOthers', label: 'ほかを隠す'},

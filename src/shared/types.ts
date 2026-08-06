@@ -24,6 +24,21 @@ export type TermOut =
   | {kind: 'snapshot'; id: string; data: string}
   | {kind: 'data'; id: string; data: string}
 
+export interface AppearanceSettings {
+  /** 背景の不透明度(%) 20-100。100 未満でウィンドウ背景が透過する */
+  opacity: number
+  background: string
+  foreground: string
+  accent: string
+}
+
+export const DEFAULT_APPEARANCE: AppearanceSettings = {
+  opacity: 100,
+  background: '#0f0f11',
+  foreground: '#e4e4e7',
+  accent: '#d97757',
+}
+
 // IPC チャンネル名。main / preload / renderer で共有する契約
 export const CH = {
   sessionCreate: 'session:create',
@@ -34,6 +49,10 @@ export const CH = {
   sessionsUpdate: 'sessions:update',
   editSelectAll: 'edit:selectAll',
   editFind: 'edit:find',
+  editOpenSettings: 'edit:openSettings',
+  settingsGet: 'settings:get',
+  settingsSet: 'settings:set',
+  settingsUpdate: 'settings:update',
   shellOpenExternal: 'shell:openExternal',
   termOut: 'term:out',
   termIn: 'term:in',

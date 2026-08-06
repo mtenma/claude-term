@@ -11,6 +11,7 @@ import {whenAllPtysExited, type SessionManager} from './sessions'
  *   basic  … 1セッションで色付き出力
  *   states … 4セッションで 実行中/承認待ち/待機/終了 の4状態を再現
  *   search … ⌘F 検索バーを開いて「error」を検索した状態(ハイライト確認)
+ *   settings … 外観設定パネルを開いた状態
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
 export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
@@ -49,6 +50,11 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
         win.webContents.sendInputEvent({type: 'char', keyCode: ch})
       }
     })
+  } else if (scenario === 'settings') {
+    const a = sm.create()
+    sm.attach(a.id)
+    at(1500, () => sm.writeTo(a.id, 'echo 外観設定デモ\r'))
+    at(3000, () => win.webContents.send(CH.editOpenSettings))
   } else if (scenario === 'states') {
     const a = sm.create() // 実行中(緑): 連続出力
     const b = sm.create() // 承認待ち(オレンジ): hook サーバへ attention を通知

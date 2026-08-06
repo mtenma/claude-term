@@ -1,15 +1,24 @@
 :root {
+  /* --bg / --text / --accent / --bg-pct は外観設定から JS で上書きされる。
+     他の色は color-mix で派生させ、背景色1つで全体が追従するようにする */
   --bg: #0f0f11;
-  --panel: #17171a;
-  --panel-2: #1d1d21;
-  --border: #26262b;
   --text: #e4e4e7;
-  --text-dim: #a1a1aa;
-  --text-faint: #6b6b74;
+  --accent: #d97757;
+  --bg-pct: 100%; /* 背景の不透明度 */
+  --panel: color-mix(in srgb, var(--bg) 97%, white);
+  --panel-2: color-mix(in srgb, var(--bg) 94%, white);
+  --border: color-mix(in srgb, var(--bg) 91%, white);
+  --raise-1: color-mix(in srgb, var(--bg) 92%, white); /* カード hover */
+  --raise-2: color-mix(in srgb, var(--bg) 89%, white); /* 選択・ピル・スクロールバー */
+  --raise-3: color-mix(in srgb, var(--bg) 86%, white); /* ボタン hover */
+  --text-dim: color-mix(in srgb, var(--text) 70%, var(--bg));
+  --text-faint: color-mix(in srgb, var(--text) 42%, var(--bg));
   --green: #22c55e;
   --orange: #f59e0b;
   --gray: #3f3f46;
-  --accent: #d97757;
+  /* 透過を反映した背景(不透明度 100% なら従来と同一) */
+  --bg-a: color-mix(in srgb, var(--bg) var(--bg-pct), transparent);
+  --panel-a: color-mix(in srgb, var(--panel) var(--bg-pct), transparent);
 }
 
 * {
@@ -21,7 +30,7 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--bg);
+  background: var(--bg-a);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
   overflow: hidden;
@@ -111,7 +120,7 @@ body.resizing {
 }
 
 #search-bar button:hover {
-  background: #33333a;
+  background: var(--raise-3);
   color: var(--text);
 }
 
@@ -163,7 +172,7 @@ body.resizing {
   min-width: 260px;
   display: flex;
   flex-direction: column;
-  background: var(--panel);
+  background: var(--panel-a);
   flex-shrink: 0;
 }
 
@@ -217,11 +226,11 @@ body.resizing {
 }
 
 .card:hover {
-  background: #232329;
+  background: var(--raise-1);
 }
 
 .card.selected {
-  background: #2a2a33;
+  background: var(--raise-2);
   box-shadow: 0 0 0 1px rgba(228, 228, 231, 0.35) inset;
 }
 
@@ -239,7 +248,7 @@ body.resizing {
 }
 
 .card.exited {
-  border-color: #2c2c31;
+  border-color: var(--border);
   opacity: 0.55;
 }
 
@@ -274,7 +283,7 @@ body.resizing {
   font-size: 10px;
   padding: 2px 7px;
   border-radius: 99px;
-  background: #2a2a30;
+  background: var(--raise-2);
   color: var(--text-dim);
 }
 
@@ -303,7 +312,7 @@ body.resizing {
 }
 
 .card-close:hover {
-  background: #33333a;
+  background: var(--raise-3);
   color: var(--text);
 }
 
@@ -340,6 +349,117 @@ body.resizing {
   white-space: pre;
 }
 
+/* ---- 外観設定パネル ---- */
+
+#settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+#settings-overlay.hidden {
+  display: none;
+}
+
+#settings-panel {
+  width: 320px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+}
+
+#settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+#settings-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+#settings-close:hover {
+  background: var(--raise-3);
+  color: var(--text);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 7px 0;
+}
+
+.settings-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#set-opacity {
+  width: 130px;
+  accent-color: var(--accent);
+}
+
+#set-opacity-val {
+  min-width: 38px;
+  text-align: right;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-row input[type='color'] {
+  width: 44px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+#settings-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+#settings-reset {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#settings-reset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* ---- スクロールバー ---- */
 
 ::-webkit-scrollbar {
@@ -347,7 +467,7 @@ body.resizing {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2e2e34;
+  background: var(--raise-2);
   border-radius: 4px;
 }
 

@@ -5,7 +5,14 @@ import {SearchAddon} from '@xterm/addon-search'
 import {WebLinksAddon} from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import './styles.css'
-import type {SessionInfo, SessionState, SessionsUpdate, TermOut} from '../shared/types'
+import {
+  DEFAULT_APPEARANCE,
+  type AppearanceSettings,
+  type SessionInfo,
+  type SessionState,
+  type SessionsUpdate,
+  type TermOut,
+} from '../shared/types'
 import type {ClaudeTermApi} from '../preload/preload'
 
 declare global {
@@ -15,6 +22,8 @@ declare global {
 }
 
 const api = window.claudeTerm
+
+let appearance: AppearanceSettings = DEFAULT_APPEARANCE
 
 const STATE_LABELS: Record<SessionState, string> = {
   running: '実行中',
@@ -45,6 +54,7 @@ const term = new Terminal({
   scrollback: 5000,
   cursorBlink: true,
   allowProposedApi: true,
+  allowTransparency: true,
   theme: {
     background: '#0f0f11',
     foreground: '#e4e4e7',
@@ -64,12 +74,26 @@ term.loadAddon(
   }),
 )
 term.open(host)
-try {
-  const webgl = new WebglAddon()
-  webgl.onContextLoss(() => webgl.dispose())
-  term.loadAddon(webgl)
-} catch {
-  // WebGL が使えない環境では DOM レンダラーで続行
+
+// WebGL レンダラーは透過背景を描けないため、外観設定(透過)に応じて付け外しする
+let webgl: WebglAddon | null = null
+function setWebglEnabled(on: boolean): void {
+  if (on && webgl === null) {
+    try {
+      const addon = new WebglAddon()
+      addon.onContextLoss(() => {
+        addon.dispose()
+        webgl = null
+      })
+      term.loadAddon(addon)
+      webgl = addon
+    } catch {
+      webgl = null // WebGL が使えない環境では DOM レンダラーで続行
+    }
+  } else if (!on && webgl !== null) {
+    webgl.dispose()
+    webgl = null
+  }
 }
 
 // 改行支援のため「直前に打った文字がスペースか」を追跡する
@@ -133,12 +157,12 @@ const searchBar = el<HTMLDivElement>('search-bar')
 const searchInput = el<HTMLInputElement>('search-input')
 const searchCount = el<HTMLSpanElement>('search-count')
 
-const SEARCH_DECORATIONS = {
+const searchDecorations = () => ({
   matchBackground: '#3f3f46',
   matchOverviewRuler: '#6b6b74',
-  activeMatchBackground: '#d97757',
-  activeMatchColorOverviewRuler: '#d97757',
-}
+  activeMatchBackground: appearance.accent,
+  activeMatchColorOverviewRuler: appearance.accent,
+})
 
 search.onDidChangeResults(({resultIndex, resultCount}) => {
   if (searchInput.value === '') searchCount.textContent = ''
@@ -153,7 +177,7 @@ function doSearch(dir: 'next' | 'prev', incremental = false): void {
     searchCount.textContent = ''
     return
   }
-  const opts = {incremental, decorations: SEARCH_DECORATIONS}
+  const opts = {incremental, decorations: searchDecorations()}
   if (dir === 'next') search.findNext(q, opts)
   else search.findPrevious(q, opts)
 }
@@ -189,6 +213,88 @@ el<HTMLButtonElement>('search-next').addEventListener('click', () => doSearch('n
 el<HTMLButtonElement>('search-close').addEventListener('click', closeSearch)
 
 api.onFind(openSearch)
+
+// ---- 外観設定 ----
+
+const settingsOverlay = el<HTMLDivElement>('settings-overlay')
+const setOpacity = el<HTMLInputElement>('set-opacity')
+const setOpacityVal = el<HTMLSpanElement>('set-opacity-val')
+const setBg = el<HTMLInputElement>('set-bg')
+const setFg = el<HTMLInputElement>('set-fg')
+const setAccent = el<HTMLInputElement>('set-accent')
+
+function cssRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+function applyAppearance(a: AppearanceSettings): void {
+  appearance = a
+  const root = document.documentElement.style
+  root.setProperty('--bg', a.background)
+  root.setProperty('--text', a.foreground)
+  root.setProperty('--accent', a.accent)
+  root.setProperty('--bg-pct', `${a.opacity}%`)
+  const translucent = a.opacity < 100
+  // 透過時はターミナル自身の背景を消して body の半透明背景を透かす。
+  // WebGL レンダラーは透過背景に対応しないため DOM レンダラーへ切り替える
+  setWebglEnabled(!translucent)
+  term.options.theme = {
+    ...term.options.theme,
+    background: translucent ? cssRgba(a.background, 0) : a.background,
+    foreground: a.foreground,
+    cursorAccent: a.background,
+  }
+  setOpacity.value = String(a.opacity)
+  setOpacityVal.textContent = `${a.opacity}%`
+  setBg.value = a.background
+  setFg.value = a.foreground
+  setAccent.value = a.accent
+}
+
+function collectAppearance(): AppearanceSettings {
+  return {
+    opacity: Number(setOpacity.value),
+    background: setBg.value,
+    foreground: setFg.value,
+    accent: setAccent.value,
+  }
+}
+
+for (const input of [setOpacity, setBg, setFg, setAccent]) {
+  input.addEventListener('input', () => {
+    const a = collectAppearance()
+    applyAppearance(a)
+    api.setSettings(a)
+  })
+}
+
+el<HTMLButtonElement>('settings-reset').addEventListener('click', () => {
+  applyAppearance(DEFAULT_APPEARANCE)
+  api.setSettings(DEFAULT_APPEARANCE)
+})
+
+function closeSettings(): void {
+  settingsOverlay.classList.add('hidden')
+  term.focus()
+}
+
+el<HTMLButtonElement>('settings-close').addEventListener('click', closeSettings)
+settingsOverlay.addEventListener('mousedown', (e) => {
+  if (e.target === settingsOverlay) closeSettings()
+})
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !settingsOverlay.classList.contains('hidden')) closeSettings()
+})
+
+api.onOpenSettings(() => settingsOverlay.classList.remove('hidden'))
+api.onSettingsUpdate((a) => {
+  // 自分の変更のエコーバックは適用済みなのでスキップ(他ウィンドウ発の変更だけ反映)
+  if (JSON.stringify(a) !== JSON.stringify(appearance)) applyAppearance(a)
+})
+void api.getSettings().then(applyAppearance)
 
 // ---- サイドバー ----
 

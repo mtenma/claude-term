@@ -34,6 +34,36 @@
       <div id="session-list"></div>
     </aside>
   </div>
+  <div id="settings-overlay" class="hidden">
+    <div id="settings-panel">
+      <div id="settings-head">
+        <span>外観設定</span>
+        <button id="settings-close" title="閉じる (Esc)">×</button>
+      </div>
+      <label class="settings-row">
+        <span>背景の透過</span>
+        <span class="settings-ctrl">
+          <input id="set-opacity" type="range" min="20" max="100" step="1" />
+          <span id="set-opacity-val"></span>
+        </span>
+      </label>
+      <label class="settings-row">
+        <span>背景色</span>
+        <input id="set-bg" type="color" />
+      </label>
+      <label class="settings-row">
+        <span>文字色</span>
+        <input id="set-fg" type="color" />
+      </label>
+      <label class="settings-row">
+        <span>アクセント色</span>
+        <input id="set-accent" type="color" />
+      </label>
+      <div id="settings-foot">
+        <button id="settings-reset">デフォルトに戻す</button>
+      </div>
+    </div>
+  </div>
   <script src="./renderer.js"></script>
 </body>
 </html>

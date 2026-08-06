@@ -1,5 +1,11 @@
 import {contextBridge, ipcRenderer} from 'electron'
-import {CH, type SessionInfo, type SessionsUpdate, type TermOut} from '../shared/types'
+import {
+  CH,
+  type AppearanceSettings,
+  type SessionInfo,
+  type SessionsUpdate,
+  type TermOut,
+} from '../shared/types'
 
 const api = {
   createSession: (): Promise<SessionInfo> => ipcRenderer.invoke(CH.sessionCreate),
@@ -23,6 +29,14 @@ const api = {
     ipcRenderer.on(CH.editFind, () => cb())
   },
   openExternal: (url: string): void => ipcRenderer.send(CH.shellOpenExternal, url),
+  getSettings: (): Promise<AppearanceSettings> => ipcRenderer.invoke(CH.settingsGet),
+  setSettings: (a: AppearanceSettings): void => ipcRenderer.send(CH.settingsSet, a),
+  onSettingsUpdate: (cb: (a: AppearanceSettings) => void): void => {
+    ipcRenderer.on(CH.settingsUpdate, (_e, a: AppearanceSettings) => cb(a))
+  },
+  onOpenSettings: (cb: () => void): void => {
+    ipcRenderer.on(CH.editOpenSettings, () => cb())
+  },
 }
 
 contextBridge.exposeInMainWorld('claudeTerm', api)
