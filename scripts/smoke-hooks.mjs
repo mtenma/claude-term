@@ -77,7 +77,8 @@ const userSettings = {
   statusLine: {type: 'command', command: 'my-own-statusline.sh'},
   hooks: {
     PreToolUse: [{matcher: 'Bash', hooks: [{type: 'command', command: 'echo my-own-hook'}]}],
-    SessionStart: [{hooks: [{type: 'command', command: 'echo hello'}]}],
+    // claude-term が管理しないイベント(無関係イベントの不変性チェック用)
+    PreCompact: [{hooks: [{type: 'command', command: 'echo hello'}]}],
   },
 }
 const merged = withClaudeTermHooks(userSettings, SL_PATH)
@@ -90,7 +91,7 @@ check(
     merged.hooks.PreToolUse.length === 2,
   '既存のユーザー hook を保全しつつ追記する',
 )
-check(eq(merged.hooks.SessionStart, userSettings.hooks.SessionStart), '無関係なイベントは不変')
+check(eq(merged.hooks.PreCompact, userSettings.hooks.PreCompact), '無関係なイベントは不変')
 check(
   eq(merged.statusLine, userSettings.statusLine),
   'ユーザー自身の statusLine 設定には触れない',
