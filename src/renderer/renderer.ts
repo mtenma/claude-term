@@ -118,6 +118,11 @@ function activeClaude(): boolean {
   return sessions.find((s) => s.id === activeId)?.claudeActive ?? false
 }
 term.attachCustomKeyEventHandler((ev) => {
+  // Enter の keypress は常に xterm に処理させない。keydown をこのハンドラで横取り
+  // した場合や IME 経由(keyCode 229)の場合、xterm 内部では keydown が「未処理」の
+  // 扱いになり、後続の keypress から素の \r が二重送信されてしまう
+  // (通常の Enter は keydown 側で送信されるため keypress を止めても影響しない)
+  if (ev.type === 'keypress' && ev.key === 'Enter') return false
   if (ev.type !== 'keydown') return true
   if (ev.isComposing || ev.keyCode === 229) return ev.key !== 'Enter'
   if (ev.key !== 'Enter' || ev.ctrlKey || ev.metaKey || ev.altKey) return true
