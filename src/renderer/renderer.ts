@@ -111,13 +111,15 @@ term.onData((d) => {
 //   Shift + Enter → claude 実行中は \ + Enter(claude の改行記法)、
 //                   それ以外は LF(= Ctrl+J。codex 等の TUI が改行として解釈)
 //   行末スペース + Enter → claude 実行中のみ、スペースを消して \ + Enter
-// IME 変換中の Enter には介入しない。
+// IME 変換中の Enter/Shift+Enter は xterm に処理させない(確定は IME 側で行われ、
+// テキストは composition イベント経由で届く)。xterm に渡すと CompositionHelper が
+// 変換確定後に keydown を通常キーとして処理し、素の \r が送信されてしまう
 function activeClaude(): boolean {
   return sessions.find((s) => s.id === activeId)?.claudeActive ?? false
 }
 term.attachCustomKeyEventHandler((ev) => {
   if (ev.type !== 'keydown') return true
-  if (ev.isComposing || ev.keyCode === 229) return true
+  if (ev.isComposing || ev.keyCode === 229) return ev.key !== 'Enter'
   if (ev.key !== 'Enter' || ev.ctrlKey || ev.metaKey || ev.altKey) return true
   const claude = activeClaude()
   if (ev.shiftKey) {
