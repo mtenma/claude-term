@@ -243,6 +243,7 @@ body.resizing {
 /* ---- セッションカード ---- */
 
 .card {
+  position: relative;
   border: 2px solid var(--gray);
   border-radius: 10px;
   background: var(--panel-2);
@@ -258,7 +259,20 @@ body.resizing {
 
 .card.selected {
   background: var(--raise-2);
-  box-shadow: 0 0 0 1px rgba(228, 228, 231, 0.35) inset;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent) inset;
+}
+
+/* 状態色の外枠とは別に、現在メイン表示中のカードを示すカーソル */
+.card.selected::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 5px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .card.running {
