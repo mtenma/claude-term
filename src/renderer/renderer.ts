@@ -141,8 +141,14 @@ term.attachCustomKeyEventHandler((ev) => {
 })
 
 api.onTermOut((p: TermOut) => {
-  if (p.kind === 'snapshot') term.reset()
-  term.write(p.data, () => api.termAck(p.data.length))
+  const isSnapshot = p.kind === 'snapshot'
+  if (isSnapshot) term.reset()
+  term.write(p.data, () => {
+    api.termAck(p.data.length)
+    // 新セッションのモードを復元してから focus する。復元前に focus すると、旧 TUI の
+    // focus reporting 応答が新しい PTY へ流れ、待機シェルが出力したように見えてしまう
+    if (isSnapshot && p.id === activeId) term.focus()
+  })
 })
 
 // ---- リサイズ ----
@@ -200,12 +206,12 @@ function openSearch(): void {
   if (searchInput.value !== '') doSearch('next', true)
 }
 
-function closeSearch(): void {
+function closeSearch(refocus = true): void {
   if (searchBar.classList.contains('hidden')) return
   search.clearDecorations()
   searchCount.textContent = ''
   searchBar.classList.add('hidden')
-  term.focus()
+  if (refocus) term.focus()
 }
 
 searchInput.addEventListener('input', () => doSearch('next', true))
@@ -221,7 +227,7 @@ searchInput.addEventListener('keydown', (ev) => {
 })
 el<HTMLButtonElement>('search-prev').addEventListener('click', () => doSearch('prev'))
 el<HTMLButtonElement>('search-next').addEventListener('click', () => doSearch('next'))
-el<HTMLButtonElement>('search-close').addEventListener('click', closeSearch)
+el<HTMLButtonElement>('search-close').addEventListener('click', () => closeSearch())
 
 api.onFind(openSearch)
 
@@ -317,7 +323,7 @@ function applyUpdate(u: SessionsUpdate): void {
   // ドラッグ中の再描画は DnD を中断させるため見送る(確定時に main から強制更新が届く)
   if (draggingId !== null) return
   // 表示セッションが変わったら検索状態は持ち越さない
-  if (u.activeId !== activeId) closeSearch()
+  if (u.activeId !== activeId) closeSearch(false)
   sessions = u.sessions
   activeId = u.activeId
   if (activeId === null) term.reset()
@@ -408,10 +414,12 @@ function buildCard(s: SessionInfo): HTMLElement {
       term.focus()
       return
     }
-    closeSearch()
+    closeSearch(false)
+    // focus-out は接続先を変える前のセッションへ届ける
+    term.blur()
+    lastTypedWasSpace = false
     activeId = s.id
     api.attachSession(s.id)
-    term.focus()
     renderList()
   })
   return card
@@ -448,7 +456,10 @@ listEl.addEventListener('drop', (e) => {
 })
 
 newBtn.addEventListener('click', () => {
-  void api.createSession().then(() => term.focus())
+  term.blur()
+  lastTypedWasSpace = false
+  // 新セッションは snapshot 復元後に onTermOut から focus する
+  void api.createSession().catch(() => term.focus())
 })
 
 api.onSessionsUpdate(applyUpdate)

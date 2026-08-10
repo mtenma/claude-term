@@ -12,6 +12,7 @@ import {whenAllPtysExited, type SessionManager} from './sessions'
  *   states … 4セッションで 実行中/承認待ち/待機/終了 の4状態を再現
  *   search … ⌘F 検索バーを開いて「error」を検索した状態(ハイライト確認)
  *   settings … 外観設定パネルを開いた状態
+ *   focus-switch … focus reporting 中のTUIから待機シェルへの切替回帰テスト
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
 export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
@@ -19,6 +20,7 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
   if (!out) return
   const scenario = process.env.CLAUDE_TERM_DEMO ?? 'empty'
   const captureDelay = Number(process.env.CLAUDE_TERM_SHOT_DELAY ?? 7000)
+  let scenarioFailure: Error | null = null
 
   win.setSize(1440, 900)
 
@@ -71,12 +73,47 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
       sm.writeTo(c.id, 'cd /private/tmp; echo 静止セッション\r')
       sm.writeTo(d.id, 'exit 1\r') // 異常終了(正常 exit はカードが自動で閉じるため)
     })
+  } else if (scenario === 'focus-switch') {
+    const a = sm.create() // focus reporting を有効にする TUI 役
+    const b = sm.create() // 予期しない入力を検出する待機シェル
+    sm.attach(a.id)
+    at(1200, () => {
+      sm.writeTo(
+        a.id,
+        "printf '\\e[?1004h'; stty -echo -icanon min 1 time 0; dd bs=1 count=3 of=/dev/null 2>/dev/null; sleep 10\r",
+      )
+      sm.writeTo(
+        b.id,
+        "stty -echo -icanon min 1 time 0; dd bs=1 count=3 of=/dev/null 2>/dev/null; echo UNEXPECTED_FOCUS_INPUT; stty sane\r",
+      )
+    })
+    // 両セッションが静穏化してから、実際の renderer のカードクリック経路で切り替える
+    at(4500, () => {
+      const selector = `.card[data-id="${b.id}"]`
+      void win.webContents
+        .executeJavaScript(`(() => {
+          document.querySelector('.xterm-helper-textarea')?.blur()
+          document.querySelector(${JSON.stringify(selector)})?.click()
+        })()`)
+        .catch((err) => {
+          scenarioFailure = new Error(`focus-switch click failed: ${String(err)}`)
+        })
+    })
+    at(5200, () => {
+      const info = sm.currentUpdate().sessions.find((s) => s.id === b.id)
+      if (info?.state !== 'idle') {
+        scenarioFailure = new Error(
+          `focus-switch changed idle session state: ${info?.state ?? 'missing'}`,
+        )
+      }
+    })
   }
 
   at(captureDelay, () => {
     void (async () => {
       let code = 0
       try {
+        if (scenarioFailure) throw scenarioFailure
         const img = await win.webContents.capturePage()
         const buf = img.toPNG()
         if (buf.length < 10_000) throw new Error(`screenshot too small (${buf.length} bytes)`)
