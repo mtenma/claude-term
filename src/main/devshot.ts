@@ -13,6 +13,8 @@ import {whenAllPtysExited, type SessionManager} from './sessions'
  *   search … ⌘F 検索バーを開いて「error」を検索した状態(ハイライト確認)
  *   settings … 外観設定パネルを開いた状態
  *   focus-switch … focus reporting 中のTUIから待機シェルへの切替回帰テスト
+ *   ruler  … 全カラムに桁ルーラーを表示(右端の欠け・幅計算の検証)
+ *   swap   … 透過設定の切替(WebGL↔DOM レンダラー)後の列数再計算の検証
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
 export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
@@ -25,6 +27,14 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
   win.setSize(1440, 900)
 
   const at = (ms: number, fn: () => void) => setTimeout(fn, ms)
+
+  // 現在の cols を PTY 側から測って全カラムを埋めるルーラー。
+  // 1行目: ASCII 桁ルーラー(cols 桁ちょうど)、2行目: 全角ルーラー(cols/2 文字)。
+  // どちらも折り返し・右端欠けが無ければ PTY と描画の幅計算は一致している
+  const rulerCmd =
+    `cols=$(tput cols); echo "COLS=$cols"; ` +
+    `awk -v n="$cols" 'BEGIN{s="";for(i=1;i<=n;i++)s=s substr("1234567890",(i-1)%10+1,1);print s}'; ` +
+    `awk -v n="$cols" 'BEGIN{s="";for(i=1;i<=int(n/2)-1;i++)s=s"あ";print s"字"}'\r`
 
   if (scenario === 'basic') {
     const a = sm.create()
@@ -72,6 +82,53 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
       )
       sm.writeTo(c.id, 'cd /private/tmp; echo 静止セッション\r')
       sm.writeTo(d.id, 'exit 1\r') // 異常終了(正常 exit はカードが自動で閉じるため)
+    })
+  } else if (scenario === 'ruler') {
+    // PTY が報告する cols と実際に描画される幅の一致を検証する。
+    // CLAUDE_TERM_ZOOM=<zoomLevel> でズーム変更後(⌘+/⌘-)の幅計算も検証できる
+    const a = sm.create()
+    sm.attach(a.id)
+    // zoomLevel は Electron がプロファイルに永続化するため、毎回明示的に設定する
+    const zoom = Number(process.env.CLAUDE_TERM_ZOOM ?? '0')
+    at(800, () => win.webContents.setZoomLevel(Number.isFinite(zoom) ? zoom : 0))
+    at(1500, () => sm.writeTo(a.id, `clear; ${rulerCmd}`))
+    at(4500, () => {
+      void win.webContents
+        .executeJavaScript(`(() => {
+          const w = (sel) => document.querySelector(sel)?.getBoundingClientRect()?.width
+          const vp = document.querySelector('.xterm-viewport')
+          return JSON.stringify({
+            host: w('#term-host'),
+            xterm: w('.xterm'),
+            screen: w('.xterm-screen'),
+            vpClient: vp?.clientWidth,
+            vpOffset: vp?.offsetWidth,
+            dpr: window.devicePixelRatio,
+          })
+        })()`)
+        .then((s) => console.log('[ruler-dom]', s))
+        .catch((err) => console.error('[ruler-dom] failed:', err))
+    })
+  } else if (scenario === 'swap') {
+    // 透過設定の切替(WebGL ↔ DOM レンダラー)後に列数が再計算されることの検証。
+    // opacity 100 で起動 → ルーラー表示 → 85 へ切替 → 再表示。
+    // 切替の前後どちらのルーラーも右端欠け・折り返しが無ければ正しい
+    const a = sm.create()
+    sm.attach(a.id)
+    at(800, () => win.webContents.setZoomLevel(0))
+    at(1500, () => sm.writeTo(a.id, `clear; ${rulerCmd}`))
+    at(3000, () => {
+      win.webContents.send(CH.settingsUpdate, {
+        opacity: 85,
+        background: '#0f0f11',
+        foreground: '#e4e4e7',
+        accent: '#d97757',
+      })
+    })
+    at(4200, () => sm.writeTo(a.id, rulerCmd))
+    at(5500, () => {
+      sm.writeTo(a.id, 'stty size\r')
+      console.log('[swap] sm size', (sm as unknown as {cols: number; rows: number}).cols)
     })
   } else if (scenario === 'focus-switch') {
     const a = sm.create() // focus reporting を有効にする TUI 役

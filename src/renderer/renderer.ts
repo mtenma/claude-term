@@ -75,29 +75,46 @@ term.loadAddon(
 )
 term.open(host)
 
-// WebGL レンダラーは透過背景を描けないため、外観設定(透過)に応じて付け外しする
+// WebGL レンダラーは透過背景を描けないため、外観設定(透過)に応じて付け外しする。
+// WebGL と DOM ではセル幅の計算(デバイスピクセル丸め)が僅かに異なり列数も変わるため、
+// レンダラーが実際に切り替わったら必ず applyFit() で列数を再計算する。
+// これを怠ると、切替前の列数のまま新レンダラーのセル幅で描画され、
+// グリッドがホストからはみ出して右端の文字が欠ける(または右に余白が残る)
 let webgl: WebglAddon | null = null
-function setWebglEnabled(on: boolean): void {
+function setWebglEnabled(on: boolean): boolean {
   if (on && webgl === null) {
     try {
       const addon = new WebglAddon()
       addon.onContextLoss(() => {
         addon.dispose()
         webgl = null
+        refitForRendererChange() // DOM レンダラーへのフォールバックでセル幅が変わる
       })
       term.loadAddon(addon)
       webgl = addon
+      return true
     } catch {
       webgl = null // WebGL が使えない環境では DOM レンダラーで続行
+      return false
     }
-  } else if (!on && webgl !== null) {
+  }
+  if (!on && webgl !== null) {
     try {
       webgl.dispose()
     } catch {
       // dispose の失敗はレンダラー切替を妨げない
     }
     webgl = null
+    return true
   }
+  return false
+}
+
+// レンダラー交換直後は xterm 内部のセル寸法の更新が次フレームへ遅れることがあるため、
+// 即時と次フレームの2回 fit して列数の再計算を確実にする
+function refitForRendererChange(): void {
+  applyFit()
+  requestAnimationFrame(applyFit)
 }
 
 // 改行支援のため「直前に打った文字がスペースか」を追跡する
@@ -167,6 +184,20 @@ new ResizeObserver(() => {
   resizeTimer = window.setTimeout(applyFit, 150)
 }).observe(host)
 requestAnimationFrame(applyFit)
+
+// モニタ間移動などで devicePixelRatio が変わるとセル幅の計算も変わるが、
+// ホスト要素の CSS サイズは変わらず ResizeObserver では検知できないため個別に監視する
+function watchDpr(): void {
+  matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener(
+    'change',
+    () => {
+      applyFit()
+      watchDpr()
+    },
+    {once: true},
+  )
+}
+watchDpr()
 
 // ---- ターミナル内検索 (⌘F) ----
 
@@ -264,7 +295,7 @@ function applyAppearance(a: AppearanceSettings): void {
   }
   // WebGL レンダラーは透過背景に対応しないため DOM レンダラーへ切り替える
   // (テーマ適用の後に行い、切替の失敗が配色へ波及しないようにする)
-  setWebglEnabled(!translucent)
+  if (setWebglEnabled(!translucent)) refitForRendererChange()
   setOpacity.value = String(a.opacity)
   setOpacityVal.textContent = `${a.opacity}%`
   setBg.value = a.background
