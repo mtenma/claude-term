@@ -13,8 +13,10 @@ import {whenAllPtysExited, type SessionManager} from './sessions'
  *   search … ⌘F 検索バーを開いて「error」を検索した状態(ハイライト確認)
  *   settings … 外観設定パネルを開いた状態
  *   focus-switch … focus reporting 中のTUIから待機シェルへの切替回帰テスト
- *   ruler  … 全カラムに桁ルーラーを表示(右端の欠け・幅計算の検証)
+ *   ruler  … 全カラムに桁ルーラーを表示(右端の欠け・幅計算・描画ドリフトの検証)
  *   swap   … 透過設定の切替(WebGL↔DOM レンダラー)後の列数再計算の検証
+ *   resize … ウィンドウリサイズ後の列数再計算とリフローの検証
+ * CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを指定できる。
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
 export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
@@ -24,17 +26,24 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
   const captureDelay = Number(process.env.CLAUDE_TERM_SHOT_DELAY ?? 7000)
   let scenarioFailure: Error | null = null
 
-  win.setSize(1440, 900)
+  // CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを変えられる
+  // (右端欠けはホスト幅の端数に依存するため、報告と同じ幅で再現するのに使う)
+  const winsize = /^(\d+)x(\d+)$/.exec(process.env.CLAUDE_TERM_WINSIZE ?? '')
+  if (winsize) win.setSize(Number(winsize[1]), Number(winsize[2]))
+  else win.setSize(1440, 900)
 
   const at = (ms: number, fn: () => void) => setTimeout(fn, ms)
 
   // 現在の cols を PTY 側から測って全カラムを埋めるルーラー。
   // 1行目: ASCII 桁ルーラー(cols 桁ちょうど)、2行目: 全角ルーラー(cols/2 文字)。
   // どちらも折り返し・右端欠けが無ければ PTY と描画の幅計算は一致している
+  // 3行目: 半角と全角の混在ルーラー(あ1 = 3セル)。混在行は文字送りの丸め誤差が
+  // 蓄積しやすく、純 ASCII・純全角の行では見えない右端の欠けを検出できる
   const rulerCmd =
     `cols=$(tput cols); echo "COLS=$cols"; ` +
     `awk -v n="$cols" 'BEGIN{s="";for(i=1;i<=n;i++)s=s substr("1234567890",(i-1)%10+1,1);print s}'; ` +
-    `awk -v n="$cols" 'BEGIN{s="";for(i=1;i<=int(n/2)-1;i++)s=s"あ";print s"字"}'\r`
+    `awk -v n="$cols" 'BEGIN{s="";for(i=1;i<=int(n/2)-1;i++)s=s"あ";print s"字"}'; ` +
+    `awk -v n="$cols" 'BEGIN{s="";w=0;i=0;while(w+3<=n-1){s=s"あ" i%10;w+=3;i++}while(w<n-1){s=s".";w++}print s"E"}'\r`
 
   if (scenario === 'basic') {
     const a = sm.create()
@@ -97,6 +106,17 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
         .executeJavaScript(`(() => {
           const w = (sel) => document.querySelector(sel)?.getBoundingClientRect()?.width
           const vp = document.querySelector('.xterm-viewport')
+          // 描画ドリフト: 最も長い行の実インク右端が行ボックス右端をどれだけ超えるか。
+          // 正のとき右端の文字がクリップされる(WidthCache の測定精度の検証)
+          const rowsBox = document.querySelector('.xterm-rows')?.getBoundingClientRect()
+          let drift = null
+          for (const row of document.querySelectorAll('.xterm-rows > div')) {
+            for (const span of row.children) {
+              const b = span.getBoundingClientRect()
+              const d = b.x + b.width - (rowsBox.x + rowsBox.width)
+              if (drift === null || d > drift) drift = d
+            }
+          }
           return JSON.stringify({
             host: w('#term-host'),
             xterm: w('.xterm'),
@@ -104,6 +124,7 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
             vpClient: vp?.clientWidth,
             vpOffset: vp?.offsetWidth,
             dpr: window.devicePixelRatio,
+            drift: drift === null ? null : Number(drift.toFixed(3)),
           })
         })()`)
         .then((s) => console.log('[ruler-dom]', s))
@@ -129,6 +150,45 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
     at(5500, () => {
       sm.writeTo(a.id, 'stty size\r')
       console.log('[swap] sm size', (sm as unknown as {cols: number; rows: number}).cols)
+    })
+  } else if (scenario === 'resize') {
+    // ウィンドウリサイズ後の列数再計算とリフローの検証。
+    // 初期サイズでルーラー表示 → CLAUDE_TERM_WINSIZE2=<幅>x<高さ> へ縮小 → 再表示。
+    // リサイズ後のルーラーに右端欠け・折り返しが無ければ幅計算は正しい
+    const a = sm.create()
+    sm.attach(a.id)
+    at(800, () => win.webContents.setZoomLevel(0))
+    at(1500, () => sm.writeTo(a.id, `clear; ${rulerCmd}`))
+    at(3000, () => {
+      const w2 = /^(\d+)x(\d+)$/.exec(process.env.CLAUDE_TERM_WINSIZE2 ?? '')
+      if (w2) win.setSize(Number(w2[1]), Number(w2[2]))
+    })
+    at(4500, () => sm.writeTo(a.id, rulerCmd))
+    at(6000, () => {
+      sm.writeTo(a.id, 'stty size\r')
+      void win.webContents
+        .executeJavaScript(`(() => {
+          const w = (sel) => document.querySelector(sel)?.getBoundingClientRect()?.width
+          const vp = document.querySelector('.xterm-viewport')
+          const t = window.__term
+          const dims = t?._core?._renderService?.dimensions
+          const rowEl = document.querySelector('.xterm-rows > div')
+          return JSON.stringify({
+            host: w('#term-host'),
+            xterm: w('.xterm'),
+            screen: w('.xterm-screen'),
+            vpClient: vp?.clientWidth,
+            vpOffset: vp?.offsetWidth,
+            cols: t?.cols,
+            cssCellW: dims?.css?.cell?.width,
+            cssCanvasW: dims?.css?.canvas?.width,
+            charW: t?._core?._charSizeService?.width,
+            rowW: rowEl?.getBoundingClientRect()?.width,
+            rowScrollW: rowEl?.scrollWidth,
+          })
+        })()`)
+        .then((s) => console.log('[resize-dom]', s))
+        .catch((err) => console.error('[resize-dom] failed:', err))
     })
   } else if (scenario === 'focus-switch') {
     const a = sm.create() // focus reporting を有効にする TUI 役

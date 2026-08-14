@@ -75,6 +75,9 @@ term.loadAddon(
 )
 term.open(host)
 
+// devshot(検証シナリオ)から xterm 内部の寸法を覗くためのフック
+;(window as unknown as {__term: Terminal}).__term = term
+
 // WebGL レンダラーは透過背景を描けないため、外観設定(透過)に応じて付け外しする。
 // WebGL と DOM ではセル幅の計算(デバイスピクセル丸め)が僅かに異なり列数も変わるため、
 // レンダラーが実際に切り替わったら必ず applyFit() で列数を再計算する。
