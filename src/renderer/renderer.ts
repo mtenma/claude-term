@@ -55,6 +55,8 @@ const term = new Terminal({
   cursorBlink: true,
   allowProposedApi: true,
   allowTransparency: true,
+  // tmux の mouse on 等でマウスがアプリに奪われていても ⌥ドラッグでローカル選択できるようにする
+  macOptionClickForcesSelection: true,
   theme: {
     background: '#0f0f11',
     foreground: '#e4e4e7',

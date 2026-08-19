@@ -135,6 +135,20 @@ check(
   `reorder は不明 ID を無視し指定漏れを末尾に残す (order=${order2.join(',')})`,
 )
 
+// OSC 52 (クリップボード転送): アクティブセッションからのコピーは届き、
+// 非アクティブセッションからのものは無視されること
+const clipWrites = []
+sm.onClipboardWrite = (text) => clipWrites.push(text)
+const clipText = 'claude-term コピー確認'
+const b64 = Buffer.from(clipText).toString('base64')
+sm.writeTo(a.id, `printf '\\033]52;c;${b64}\\a'\r`)
+sm.writeTo(c.id, `printf '\\033]52;c;${Buffer.from('ignored').toString('base64')}\\a'\r`)
+await sleep(1500)
+check(
+  clipWrites.length === 1 && clipWrites[0] === clipText,
+  `OSC 52 はアクティブセッションからのみクリップボードへ届く (got=${JSON.stringify(clipWrites)})`,
+)
+
 sm.disposeAll()
 clearTimeout(watchdog)
 console.log(pass ? 'SMOKE PASS' : 'SMOKE FAIL')

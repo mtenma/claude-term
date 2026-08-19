@@ -106,6 +106,8 @@ export class SessionManager {
   onTermOut: (payload: TermOut) => void = () => {}
   /** 状態が変化した瞬間に呼ばれる(通知・バッジ用) */
   onStateChange: (info: SessionInfo, prev: SessionState | null) => void = () => {}
+  /** OSC 52 によるクリップボード書き込み要求(main 側で Electron の clipboard へ接続する) */
+  onClipboardWrite: (text: string) => void = () => {}
 
   // idPrefix はウィンドウごとに変えることで、複数ウィンドウ間でも
   // セッション ID(= hooks 通知の宛先)が衝突しないようにする
@@ -201,6 +203,20 @@ export class SessionManager {
       } catch {
         // 不正な URL は無視
       }
+      return true
+    })
+    // OSC 52 (クリップボード転送) — tmux copy-mode や ssh 先の nvim 等からの
+    // コピーをローカルのクリップボードへ届ける。形式は "<対象>;<base64>"(例 "c;aGVsbG8=")
+    term.parser.registerOscHandler(52, (data) => {
+      const sep = data.indexOf(';')
+      if (sep < 0) return true
+      const payload = data.slice(sep + 1)
+      // "?" はクリップボード読み出し要求 — 内容漏えいの恐れがあるため応じない
+      if (!payload || payload === '?') return true
+      // 非アクティブセッションには書き換えさせない(裏のプロセスによる改変防止)
+      if (this.activeId !== session.id) return true
+      const text = Buffer.from(payload, 'base64').toString('utf8')
+      if (text) this.onClipboardWrite(text)
       return true
     })
     pty.onData((data) => this.handlePtyData(session, data))

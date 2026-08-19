@@ -1,4 +1,4 @@
-import {app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell} from 'electron'
+import {app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell} from 'electron'
 import * as path from 'node:path'
 import {CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
 import {SessionManager, whenAllPtysExited} from './sessions'
@@ -136,6 +136,7 @@ async function createWindow(): Promise<WindowContext> {
     updateDockBadge()
   }
   sm.onTermOut = (p) => send(ctx, CH.termOut, p)
+  sm.onClipboardWrite = (text) => clipboard.writeText(text)
   sm.onStateChange = (info, prev) => {
     if (info.state === 'attention') {
       notifySession(

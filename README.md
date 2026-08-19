@@ -73,6 +73,21 @@ npm run package      # release/ に自分用の .app と DMG を生成
 
 hooks を追記しない場合もアプリは動作します(出力の有無による実行中/待機の判定と、ターミナルベルによる要注目検知のみになります)。
 
+## tmux / ssh でのコピー(OSC 52)
+
+ssh 先や tmux 内でコピーした内容は、クリップボード転送シーケンス(OSC 52)経由でローカルの macOS クリップボードへ届きます。tmux を使う場合は接続先の `~/.tmux.conf` に以下を追加してください(tmux 3.2+):
+
+```tmux
+set -s set-clipboard on
+# 外側端末(xterm-256color)を OSC 52 対応として扱わせる
+set -as terminal-features ',xterm-256color:clipboard'
+```
+
+- copy-mode でのコピー(`Enter` / `y` 等)がそのまま Mac のクリップボードに入ります(リモートの `pbcopy` / `xclip` はリモート側にしか書けないため不要)
+- tmux 内の Neovim 等がアプリ自身の OSC 52 でコピーする場合は `set -g allow-passthrough on` も追加してください(tmux 3.3+)
+- `mouse on` でドラッグ選択が tmux に奪われる場合は、⌥(Option)を押しながらドラッグすると Claude Term 側のローカル選択になります
+- セキュリティのため、クリップボード読み出し要求(OSC 52 の `?`)には応答しません。書き込みも表示中のセッションからのみ受け付けます
+
 ## 開発
 
 ```sh
