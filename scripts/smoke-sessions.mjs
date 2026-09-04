@@ -110,6 +110,41 @@ check(
   `exit したセッションは自動で閉じる (remaining=${remaining.join(',')})`,
 )
 
+// 直前のコマンドが失敗していても(zsh の exit は直前コマンドの終了ステータスを返す)、
+// ユーザーの exit なら異常終了扱いにせずセッションを閉じること
+const d = sm.create()
+await sleep(1500)
+sm.writeTo(d.id, 'false\r')
+await sleep(300)
+sm.writeTo(d.id, 'exit\r')
+await sleep(1200)
+check(
+  !sm.currentUpdate().sessions.some((x) => x.id === d.id),
+  '直前コマンドが失敗していても exit でセッションが閉じる',
+)
+
+// シグナルで死んだシェルは「終了」カードとして残り、案内が出て Enter で閉じられること
+const e = sm.create()
+await sleep(1500)
+sm.writeTo(e.id, 'kill -KILL $$\r')
+await sleep(1200)
+const eInfo = sm.currentUpdate().sessions.find((x) => x.id === e.id)
+check(
+  eInfo?.state === 'exited' && eInfo.preview.some((l) => l.includes('SIGKILL')),
+  `シグナル死したシェルは終了カードとして残り案内が出る (state=${eInfo?.state} preview=${JSON.stringify(eInfo?.preview)})`,
+)
+sm.attach(e.id)
+sm.inputToActive('x')
+check(
+  sm.currentUpdate().sessions.some((x) => x.id === e.id),
+  '終了カードは Enter 以外の入力では閉じない',
+)
+sm.inputToActive('\r')
+check(
+  !sm.currentUpdate().sessions.some((x) => x.id === e.id) && sm.activeId === a.id,
+  `終了カードは Enter で閉じ、隣のセッションへ移る (active=${sm.activeId})`,
+)
+
 // +new はアクティブセッションの現在ディレクトリで開くこと
 sm.writeTo(a.id, 'cd /private/tmp\r')
 await sleep(3000) // lsof ポーリング(2秒周期)による cwd 追跡を待つ

@@ -68,6 +68,13 @@ function extractHookMessage(rawBody: string): string | null {
   return null
 }
 
+/** シグナル死したシェルの画面末尾に添える案内(薄い表示で本来の出力と区別する) */
+function exitNotice(signal: number): string {
+  const name =
+    Object.entries(os.constants.signals).find(([, n]) => n === signal)?.[0] ?? `シグナル ${signal}`
+  return `\r\n\x1b[2m[プロセスが ${name} で終了しました。Enter で閉じる]\x1b[0m\r\n`
+}
+
 interface Session {
   id: string
   index: number
@@ -220,15 +227,23 @@ export class SessionManager {
       return true
     })
     pty.onData((data) => this.handlePtyData(session, data))
-    pty.onExit(({exitCode}) => {
+    pty.onExit(({signal}) => {
       trackPtyExit()
       session.exited = true
       this.disableAnswerback(session)
-      if (exitCode === 0) {
-        // 正常終了は通常のターミナルと同様にセッションごと閉じる
+      // シェルが死んだ以上 claude も居ないので hook 由来の状態は捨てる(改行支援のゲートにも効く)
+      session.hookState = null
+      // signal は macOS/Linux では常に数値(型が optional なのは Windows 向け)
+      const sig = signal ?? 0
+      if (sig === 0) {
+        // シェル自身が終了した(exit / Ctrl+D)ので、通常のターミナルと同様にセッションごと閉じる。
+        // 終了コードは判定に使わない: 対話シェルの `exit` は直前コマンドの終了ステータスを返すため、
+        // 失敗したコマンドや Ctrl+C の直後に exit すると 1 や 130 になるが、異常終了ではない
         this.removeSession(session.id)
       } else {
-        // 異常終了は出力を確認できるよう「終了」カードとして残す
+        // シグナルで死んだ(クラッシュ・外部からの kill)場合は出力を確認できるよう
+        // 「終了」カードとして残し、何が起きたかと閉じ方を画面末尾に示す(Enter で閉じる: inputToActive)
+        this.handlePtyData(session, exitNotice(sig))
         this.emitIfChanged(true)
       }
     })
@@ -278,7 +293,12 @@ export class SessionManager {
   inputToActive(data: string): void {
     if (!this.activeId) return
     const s = this.sessions.get(this.activeId)
-    if (!s || s.exited) return
+    if (!s) return
+    if (s.exited) {
+      // 「終了」カードは Enter で閉じる(画面末尾の案内どおり)。他のキーは無視
+      if (data === '\r') this.removeSession(s.id)
+      return
+    }
     s.bellAt = 0
     s.pty.write(data)
   }
