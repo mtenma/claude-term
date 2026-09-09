@@ -1,7 +1,9 @@
 import {app, type BrowserWindow} from 'electron'
+import {checkRightEdge} from './devshotEdge'
 import * as fs from 'node:fs'
 import {CH} from '../shared/types'
 import {whenAllPtysExited, type SessionManager} from './sessions'
+import {checkResizeWrapping} from './devshotResize'
 
 /**
  * 開発検証用の自動スクリーンショット。
@@ -10,12 +12,15 @@ import {whenAllPtysExited, type SessionManager} from './sessions'
  *   empty  … セッション無し(プレースホルダ確認)
  *   basic  … 1セッションで色付き出力
  *   states … 4セッションで 実行中/承認待ち/待機/終了 の4状態を再現
+ *   codex  … Codex/Claude/通常シェルの混在、カード表示・切替・入力・リサイズを検証
  *   search … ⌘F 検索バーを開いて「error」を検索した状態(ハイライト確認)
  *   settings … 外観設定パネルを開いた状態
  *   focus-switch … focus reporting 中のTUIから待機シェルへの切替回帰テスト
  *   ruler  … 全カラムに桁ルーラーを表示(右端の欠け・幅計算・描画ドリフトの検証)
  *   swap   … 透過設定の切替(WebGL↔DOM レンダラー)後の列数再計算の検証
  *   resize … ウィンドウリサイズ後の列数再計算とリフローの検証
+ *   resize-wrap … 日本語の未確定行・続きの出力・長いシェル入力を幅変更とともに検証
+ *   right-edge  … 日本語の句読点・各書体の描画幅をリサイズとズームで検証
  * CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを指定できる。
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
@@ -25,6 +30,7 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
   const scenario = process.env.CLAUDE_TERM_DEMO ?? 'empty'
   const captureDelay = Number(process.env.CLAUDE_TERM_SHOT_DELAY ?? 7000)
   let scenarioFailure: Error | null = null
+  let scenarioTask: Promise<void> | null = null
 
   // CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを変えられる
   // (右端欠けはホスト幅の端数に依存するため、報告と同じ幅で再現するのに使う)
@@ -45,7 +51,15 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
     `awk -v n="$cols" 'BEGIN{s="";for(i=1;i<=int(n/2)-1;i++)s=s"あ";print s"字"}'; ` +
     `awk -v n="$cols" 'BEGIN{s="";w=0;i=0;while(w+3<=n-1){s=s"あ" i%10;w+=3;i++}while(w<n-1){s=s".";w++}print s"E"}'\r`
 
-  if (scenario === 'basic') {
+  if (scenario === 'right-edge') {
+    scenarioTask = checkRightEdge(win, sm).catch((error) => {
+      scenarioFailure = error instanceof Error ? error : new Error(String(error))
+    })
+  } else if (scenario === 'resize-wrap') {
+    scenarioTask = checkResizeWrapping(win, sm).catch((error) => {
+      scenarioFailure = error instanceof Error ? error : new Error(String(error))
+    })
+  } else if (scenario === 'basic') {
     const a = sm.create()
     sm.attach(a.id)
     at(1500, () => {
@@ -57,6 +71,26 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
     sm.attach(a.id)
     at(1500, () => {
       sm.writeTo(a.id, 'head -c 3000000 /dev/urandom | base64; echo FLOOD_DONE\r')
+    })
+    scenarioTask = (async () => {
+      const deadline = Date.now() + 20_000
+      while (Date.now() < deadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 100))
+        const done = await win.webContents.executeJavaScript(`(() => {
+          const b = window.__term.buffer.active
+          for (let i = 0; i < b.length; i++) {
+            if (b.getLine(i)?.translateToString(true) === 'FLOOD_DONE') return true
+          }
+          return false
+        })()`)
+        if (done) {
+          console.log('[flood] 4 MB output parsed and displayed through flow control PASS')
+          return
+        }
+      }
+      throw new Error('Flood output did not reach the renderer within 20 seconds')
+    })().catch((error) => {
+      scenarioFailure = error instanceof Error ? error : new Error(String(error))
     })
   } else if (scenario === 'search') {
     const a = sm.create()
@@ -91,6 +125,204 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
       )
       sm.writeTo(c.id, 'cd /private/tmp; echo 静止セッション\r')
       sm.writeTo(d.id, 'exit 1\r') // 異常終了(正常 exit はカードが自動で閉じるため)
+    })
+  } else if (scenario === 'codex') {
+    const a = sm.create()
+    const b = sm.create()
+    const c = sm.create()
+    const d = sm.create()
+    const e = sm.create() // hooks 未取得でも Codex の起動は検知する
+    sm.attach(a.id)
+    const hook = (id: string, event: string, extra: Record<string, unknown> = {}) => {
+      sm.setCodexHook(id, JSON.stringify({event, sessionId: `test-${id}`, turnId: 'turn-1', model: 'test-model', ...extra}))
+    }
+    const approvalMessage = 'npm run check の実行を許可してください'
+    const claudeStatus = JSON.stringify({
+      model: {display_name: 'Opus 4.6'},
+      context_window: {remaining_percentage: 41.5},
+      cost: {total_cost_usd: 1.2345},
+    })
+    type CardUi = {
+      id: string
+      title: string | null
+      agent: string | null
+      model: string | null
+      state: string | null
+      stateTitle: string | null
+      preview: string | null
+      metrics: string[]
+      height: number
+      overflow: number
+      agentWidth: number
+      modelWidth: number
+      attentionRows: number
+    }
+    const cardsScript = `[...document.querySelectorAll('.card')].map(card => ({
+      id: card.dataset.id,
+      title: card.querySelector('.card-title')?.textContent ?? null,
+      agent: card.querySelector('.card-agent')?.textContent ?? null,
+      model: card.querySelector('.card-model')?.textContent ?? null,
+      state: card.querySelector('.card-state')?.textContent ?? null,
+      stateTitle: card.querySelector('.card-state')?.title ?? null,
+      preview: card.querySelector('.card-preview')?.textContent ?? null,
+      metrics: [...card.querySelectorAll('.card-metrics > span')].map(n => n.textContent),
+      height: card.getBoundingClientRect().height,
+      overflow: card.scrollWidth - card.clientWidth,
+      agentWidth: card.querySelector('.card-agent')?.getBoundingClientRect().width ?? 0,
+      modelWidth: card.querySelector('.card-model')?.getBoundingClientRect().width ?? 0,
+      attentionRows: card.querySelectorAll('.card-attn-msg').length,
+    }))`
+    const readUi = () => win.webContents.executeJavaScript(`(() => ({
+      cols: window.__term.cols,
+      sidebarWidth: document.querySelector('#sidebar').getBoundingClientRect().width,
+      buttons: [...document.querySelectorAll('#sidebar-head button')].map(n => n.textContent),
+      cards: ${cardsScript},
+    }))()`) as Promise<{cols: number; sidebarWidth: number; buttons: string[]; cards: CardUi[]}>
+    const afterRender = () => win.webContents.executeJavaScript(
+      'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))',
+    )
+    let initialCols = 0
+    at(1400, () => {
+      sm.writeTo(a.id, "printf 'Codex 状態表示テスト: 実行中\\n'\r")
+      sm.writeTo(b.id, "printf 'Codex 状態表示テスト: 承認待ち\\n'\r")
+      sm.writeTo(c.id, "printf 'Claude Code 状態表示テスト: 待機 CLAUDE_PREVIEW_OK\\n'\r")
+      sm.writeTo(d.id, "printf '通常ターミナル SHELL_PREVIEW_OK\\n'\r")
+      sm.writeTo(e.id, "printf 'Codex 通知未取得 UNKNOWN_PREVIEW_OK\\n'\r")
+      sm.setCodexProcess(e.id, 'ui-run-1', 'start')
+      for (const s of [a, b]) {
+        hook(s.id, 'SessionStart', {source: 'startup', usage: {
+          totalTokens: s.id === a.id ? 632156 : 98543,
+          contextPct: s.id === a.id ? 64 : 18,
+          rateLimits: [{remainingPct: 72, windowMinutes: 300}, {remainingPct: 89, windowMinutes: 10080}],
+        }})
+        hook(s.id, 'UserPromptSubmit')
+      }
+      hook(b.id, 'PermissionRequest', {toolKey: 'test-command', message: approvalMessage})
+      sm.setHookState(c.id, 'idle')
+      sm.applyStatus(c.id, claudeStatus)
+    })
+    at(3300, () => {
+      void win.webContents.executeJavaScript(`(() => {
+        document.querySelector('.card[data-id="${b.id}"]')?.click()
+        return window.__term.cols
+      })()`).then((cols: number) => { initialCols = cols }).catch((e) => { scenarioFailure = e })
+    })
+    at(4000, () => {
+      void (async () => {
+        // macOS の別ウィンドウにフォーカスが移っていても、実際の入力操作と同じ条件で試す。
+        win.focus()
+        await win.webContents.executeJavaScript('window.__term.focus()')
+        for (const ch of "printf 'CODEX_%s\\n' INPUT_OK") {
+          win.webContents.sendInputEvent({type: 'char', keyCode: ch})
+        }
+        win.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Return'})
+        win.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Return'})
+        win.setSize(1200, 800)
+      })().catch((e) => { scenarioFailure = e })
+    })
+    at(5500, () => {
+      scenarioTask = (async () => {
+        try {
+          const ui = await readUi()
+          if (sm.activeId !== b.id || !sm.serializeSession(b.id)?.includes('CODEX_INPUT_OK')) {
+            throw new Error(`Codex card switching / keyboard input failed: active=${sm.activeId}, expected=${b.id}, focused=${win.isFocused()}`)
+          }
+          if (!(ui.cols > 1 && ui.cols < initialCols) || Math.abs(ui.sidebarWidth - 420) > 1 ||
+              ui.buttons.join(',') !== '＋ new' || ui.cards.length !== 5) {
+            throw new Error(`Codex card rendering / resize failed: ${JSON.stringify(ui)}`)
+          }
+          const expectedAi = [
+            {id: a.id, agent: 'Codex', model: 'test-model', state: '実行中',
+              metrics: ['コンテキスト残約64%', '累計632,156 tok', '5時間残72%', '週間残89%']},
+            {id: b.id, agent: 'Codex', model: 'test-model', state: '承認待ち',
+              metrics: ['コンテキスト残約18%', '累計98,543 tok', '5時間残72%', '週間残89%']},
+            {id: c.id, agent: 'Claude Code', model: 'Opus 4.6', state: '待機',
+              metrics: ['コンテキスト残42%', '$1.23']},
+            {id: e.id, agent: 'Codex', model: null, state: '状態未取得', metrics: []},
+          ]
+          for (const expected of expectedAi) {
+            const card = ui.cards.find((item) => item.id === expected.id)
+            if (!card?.title || card.agent !== expected.agent || card.model !== expected.model ||
+                card.state !== expected.state || card.preview !== null || card.attentionRows !== 0 ||
+                card.height <= 0 || card.height > 105 || card.agentWidth <= 0 ||
+                (expected.model !== null && card.modelWidth <= 0) ||
+                JSON.stringify(card.metrics) !== JSON.stringify(expected.metrics)) {
+              throw new Error(`Compact AI card failed: ${JSON.stringify({expected, card})}`)
+            }
+          }
+          const shell = ui.cards.find((card) => card.id === d.id)
+          if (shell?.agent !== null || shell.model !== null || !shell.preview?.includes('SHELL_PREVIEW_OK') ||
+              ui.cards.find((card) => card.id === b.id)?.stateTitle !== approvalMessage) {
+            throw new Error(`Shell preview / attention tooltip failed: ${JSON.stringify(ui.cards)}`)
+          }
+
+          // Claude を終了した同じカードが通常シェルのプレビューへ戻ることを確認する。
+          sm.setHookState(c.id, 'clear')
+          await afterRender()
+          const cleared = (await readUi()).cards.find((card) => card.id === c.id)
+          if (cleared?.agent !== null || cleared.model !== null || cleared.metrics.length !== 0 ||
+              !cleared.preview?.includes('CLAUDE_PREVIEW_OK')) {
+            throw new Error(`Claude exit did not restore terminal preview: ${JSON.stringify(cleared)}`)
+          }
+          sm.setHookState(c.id, 'idle')
+          sm.applyStatus(c.id, claudeStatus)
+          await afterRender()
+          const restored = (await readUi()).cards.find((card) => card.id === c.id)
+          if (restored?.agent !== 'Claude Code' || restored.model !== 'Opus 4.6' || restored.preview !== null) {
+            throw new Error(`Idle Claude card did not hide terminal preview: ${JSON.stringify(restored)}`)
+          }
+
+          // hook が一度も届かなかった Codex も、終了後だけ通常シェルへ戻す。
+          sm.setCodexProcess(e.id, 'ui-run-1', 'exit')
+          await afterRender()
+          const codexExited = (await readUi()).cards.find((card) => card.id === e.id)
+          if (codexExited?.agent !== null || !codexExited.preview?.includes('UNKNOWN_PREVIEW_OK')) {
+            throw new Error(`Unhooked Codex exit did not restore terminal preview: ${JSON.stringify(codexExited)}`)
+          }
+          sm.setCodexProcess(e.id, 'ui-run-2', 'start')
+          await afterRender()
+
+          // 最小幅ではモデルを省略表示できるが、バッジを潰したりカード外へ横溢れさせない。
+          const narrow = await win.webContents.executeJavaScript(`(() => {
+            const sidebar = document.querySelector('#sidebar')
+            const previousWidth = sidebar.style.width
+            try {
+              sidebar.style.width = '260px'
+              return {sidebarWidth: sidebar.getBoundingClientRect().width, cards: ${cardsScript}}
+            } finally {
+              sidebar.style.width = previousWidth
+            }
+          })()`) as {sidebarWidth: number; cards: CardUi[]}
+          if (Math.abs(narrow.sidebarWidth - 260) > 1 || narrow.cards.some((card) => card.overflow > 1) ||
+              expectedAi.some((expected) => {
+                const card = narrow.cards.find((item) => item.id === expected.id)
+                return !card || card.agent !== expected.agent || card.model !== expected.model ||
+                  card.agentWidth <= 0 || (expected.model !== null && card.modelWidth <= 0) || card.preview !== null
+              })) {
+            throw new Error(`Narrow sidebar card layout failed: ${JSON.stringify(narrow)}`)
+          }
+          console.log('[codex-ui] compact AI cards with/without hooks, provider/model labels, metrics, shell previews, attention tooltip, switching, keyboard input and resize PASS')
+
+          fs.writeFileSync(`${out}.before.png`, (await win.webContents.capturePage()).toPNG())
+          // 実測した Codex のタイトルを PTY 経由で再生。コマンドは承認後も動き続ける。
+          sm.writeTo(b.id,
+            "printf '\\033]0;[ ! ] Action Required | work\\007'; sleep 0.2; " +
+            "printf '\\033]0;⠋ work\\007承認済みの処理を実行中\\n'; sleep 3; printf 'APPROVAL_%s\\n' COMMAND_DONE\r")
+          const deadline = Date.now() + 2000
+          while (sm.currentUpdate().sessions.find((s) => s.id === b.id)?.state !== 'running' && Date.now() < deadline) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 50))
+          }
+          await afterRender()
+          const resumed = (await readUi()).cards.find((card) => card.id === b.id)
+          if (resumed?.state !== '実行中' || resumed.stateTitle === approvalMessage ||
+              sm.serializeSession(b.id)?.includes('APPROVAL_COMMAND_DONE')) {
+            throw new Error(`Codex approval resume before command completion failed: ${JSON.stringify(resumed)}`)
+          }
+          console.log('[codex-ui] approval changes to running before the command completes PASS')
+        } catch (error) {
+          scenarioFailure = error instanceof Error ? error : new Error(String(error))
+        }
+      })()
     })
   } else if (scenario === 'ruler') {
     // PTY が報告する cols と実際に描画される幅の一致を検証する。
@@ -230,6 +462,9 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
     void (async () => {
       let code = 0
       try {
+        await scenarioTask
+        // 失敗時にも、その時点の欠落を画像に残す。
+        if (scenarioFailure) fs.writeFileSync(out, (await win.webContents.capturePage()).toPNG())
         if (scenarioFailure) throw scenarioFailure
         const img = await win.webContents.capturePage()
         const buf = img.toPNG()

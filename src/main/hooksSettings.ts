@@ -23,8 +23,8 @@ export const hookCommand = (state: string, withBody = false): string =>
     withBody ? `--data-binary @- -H 'Content-Type: application/json' ` : ''
   }"http://127.0.0.1:$CLAUDE_TERM_PORT/state/$CLAUDE_TERM_SESSION/${state}" >/dev/null 2>&1 || true # ${MARKER}`
 
-// idle_prompt(応答完了後の放置)は意図的に登録しない。
-// 放置は「待機(グレー)」のままにし、オレンジは「ユーザーの操作で止まっている」だけに絞る。
+// idle_prompt は Stop が届かなかった場合の待機への復帰に使う。
+// 承認待ちとは分け、応答完了としても通知しないようイベント情報を添える。
 export const DESIRED: Array<{event: string; matcher?: string; state: string; withBody?: boolean}> =
   [
     // claude 起動直後から「claude が動いているセッション」と分かるようにする(改行支援のゲート等)
@@ -38,6 +38,7 @@ export const DESIRED: Array<{event: string; matcher?: string; state: string; wit
       state: 'attention',
       withBody: true, // 通知の message(何の承認を求めているか)を転送する
     },
+    {event: 'Notification', matcher: 'idle_prompt', state: 'idle', withBody: true},
     {event: 'Stop', state: 'idle'},
     {event: 'SessionEnd', state: 'clear'},
   ]

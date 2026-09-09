@@ -83,6 +83,9 @@ body.resizing {
 
 #term-host .xterm {
   height: 100%;
+  /* 句読点の自動詰めを止め、描画時と WidthCache の測定時の字幅を揃える。
+     「。。」を半角相当で測ると、単独の「。」ごとに余分な字間が付き右端が欠ける。 */
+  text-spacing-trim: space-all;
 }
 
 /* xterm.css の viewport は不透明黒がデフォルトで、テーマの透過背景も
@@ -207,6 +210,8 @@ body.resizing {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -234,6 +239,42 @@ body.resizing {
   color: var(--accent);
 }
 
+#new-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.card-details {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  min-width: 0;
+}
+
+.card-agent {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--raise-1);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.card-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-dim);
+}
+
 #session-list {
   flex: 1;
   overflow-y: auto;
@@ -244,11 +285,13 @@ body.resizing {
 
 .card {
   position: relative;
+  isolation: isolate;
+  overflow: hidden;
   border: 2px solid var(--gray);
   border-radius: 10px;
   background: var(--panel-2);
   padding: 8px 10px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
@@ -277,6 +320,48 @@ body.resizing {
 
 .card.running {
   border-color: var(--green);
+  background: color-mix(in srgb, var(--panel-2) 86%, var(--green));
+}
+
+.card.running:hover {
+  background: color-mix(in srgb, var(--raise-1) 82%, var(--green));
+}
+
+.card.running.selected {
+  background: color-mix(in srgb, var(--raise-2) 86%, var(--green));
+}
+
+/* 斜めの柔らかな光をカード全体へ流す。文字より背面に置き、
+   地色は常に緑を保つことで光が通り過ぎた後も待機と区別できる。 */
+.card.running::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(110deg,
+    transparent 36%,
+    color-mix(in srgb, var(--green) 10%, transparent) 44%,
+    color-mix(in srgb, var(--green) 18%, transparent) 49%,
+    rgba(234, 255, 243, 0.12) 52%,
+    color-mix(in srgb, var(--green) 10%, transparent) 58%,
+    transparent 66%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: run-sheen 4.2s linear infinite;
+  /* SessionsUpdate ごとの renderList() でカードが作り直されると
+     アニメーションが先頭から再スタートして流れが途中で消えるため、
+     buildCard が与える起動からの経過時間(負の delay)で位相を連続させる */
+  animation-delay: var(--anim-epoch, 0ms);
+  pointer-events: none;
+}
+
+@keyframes run-sheen {
+  from {
+    background-position: -50% 0;
+  }
+  to {
+    background-position: 150% 0;
+  }
 }
 
 .card.attention {
@@ -315,12 +400,15 @@ body.resizing {
   font-size: 12px;
   font-weight: 600;
   flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .card-state {
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: 10px;
   padding: 2px 7px;
   border-radius: 99px;
@@ -332,6 +420,60 @@ body.resizing {
   color: var(--green);
 }
 
+/* 「実行中」バッジに claude code 本体と同じ braille スピナーを回す。
+   幅を固定しないとフレームごとにバッジ幅が揺れる */
+.card-state.running::before {
+  content: '⠋';
+  display: inline-block;
+  width: 1.1em;
+  animation: run-spin 0.8s steps(1) infinite;
+  animation-delay: var(--anim-epoch, 0ms); /* 背景の光と同じ位相連続化 */
+}
+
+@keyframes run-spin {
+  0% {
+    content: '⠋';
+  }
+  10% {
+    content: '⠙';
+  }
+  20% {
+    content: '⠹';
+  }
+  30% {
+    content: '⠸';
+  }
+  40% {
+    content: '⠼';
+  }
+  50% {
+    content: '⠴';
+  }
+  60% {
+    content: '⠦';
+  }
+  70% {
+    content: '⠧';
+  }
+  80% {
+    content: '⠇';
+  }
+  90% {
+    content: '⠏';
+  }
+}
+
+/* OS の「視差効果を減らす」設定では光を止め、緑の地色で状態を示す。 */
+@media (prefers-reduced-motion: reduce) {
+  .card.running::after,
+  .card-state.running::before {
+    animation: none;
+  }
+  .card.running::after {
+    opacity: 0;
+  }
+}
+
 .card-state.attention {
   color: var(--orange);
 }
@@ -341,6 +483,7 @@ body.resizing {
 }
 
 .card-close {
+  flex-shrink: 0;
   appearance: none;
   border: none;
   background: transparent;
@@ -357,19 +500,18 @@ body.resizing {
   color: var(--text);
 }
 
-.card-attn-msg {
-  margin-top: 5px;
+.card-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 4px;
   font-size: 10px;
-  color: var(--orange);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 14px;
+  color: var(--text-dim);
 }
 
-.card-metrics {
-  margin-top: 5px;
-  font-size: 10px;
-  color: var(--text-faint);
+.card-metrics > span {
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -380,8 +522,8 @@ body.resizing {
 }
 
 .card-preview {
-  margin: 8px 0 2px;
-  height: calc(5 * 1.5 * 10px);
+  margin: 6px 0 0;
+  max-height: calc(5 * 1.5 * 10px);
   overflow: hidden;
   font-family: Menlo, Monaco, "SF Mono", monospace;
   font-size: 10px;

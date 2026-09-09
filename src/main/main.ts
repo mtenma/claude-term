@@ -1,10 +1,11 @@
 import {app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell} from 'electron'
 import * as path from 'node:path'
-import {CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
+import {AGENT_LABELS, CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
 import {SessionManager, whenAllPtysExited} from './sessions'
 import {getAppearance, setAppearance} from './settings'
 import {startHookServer} from './hookServer'
 import {ensureClaudeHooks} from './claudeHooks'
+import {ensureCodexHooks} from './codexHooks'
 import {maybeRunDevshot} from './devshot'
 
 // 1ウィンドウ = 1 SessionManager。webContents.id をキーに対応関係を持つ
@@ -40,7 +41,8 @@ function notifySession(ctx: WindowContext, info: SessionInfo, subtitle: string, 
   // そのセッションを今まさに見ているなら通知しない
   if (ctx.win.isFocused() && ctx.sm.activeId === info.id) return
   if (!Notification.isSupported()) return
-  const notif = new Notification({title: `${info.title} — ${subtitle}`, body})
+  const agent = info.activeAgent ? `${AGENT_LABELS[info.activeAgent]} ` : ''
+  const notif = new Notification({title: `${info.title} — ${agent}${subtitle}`, body})
   notif.on('click', () => {
     if (!ctx.win.isDestroyed()) {
       ctx.win.show()
@@ -137,18 +139,18 @@ async function createWindow(): Promise<WindowContext> {
   }
   sm.onTermOut = (p) => send(ctx, CH.termOut, p)
   sm.onClipboardWrite = (text) => clipboard.writeText(text)
-  sm.onStateChange = (info, prev) => {
+  sm.onStateChange = (info) => {
     if (info.state === 'attention') {
       notifySession(
         ctx,
         info,
         '承認待ち',
-        info.attentionMessage ?? 'Claude Code が承認または入力を待っています',
+        info.attentionMessage ?? `${info.activeAgent ? AGENT_LABELS[info.activeAgent] : 'このセッション'} が承認または入力を待っています`,
       )
-    } else if (prev === 'running' && info.state === 'idle' && info.claudeActive) {
-      // Stop hook による 実行中→待機 遷移 = claude の応答完了
-      notifySession(ctx, info, '応答完了', 'Claude Code の応答が完了しました')
     }
+  }
+  sm.onResponseComplete = (info) => {
+    if (info.activeAgent) notifySession(ctx, info, '応答完了', `${AGENT_LABELS[info.activeAgent]} の応答が完了しました`)
   }
 
   win.once('ready-to-show', () => win.show())
@@ -274,6 +276,15 @@ async function main(): Promise<void> {
     onState: (id, state, rawBody) => {
       for (const ctx of contexts.values()) ctx.sm.setHookState(id, state, rawBody)
     },
+    onCodex: (id, rawJson) => {
+      for (const ctx of contexts.values()) ctx.sm.setCodexHook(id, rawJson)
+    },
+    onCodexExit: (id) => {
+      for (const ctx of contexts.values()) ctx.sm.clearCodexSession(id)
+    },
+    onCodexProcess: (id, runId, event) => {
+      for (const ctx of contexts.values()) ctx.sm.setCodexProcess(id, runId, event)
+    },
     onStatus: (id, rawJson) => {
       for (const ctx of contexts.values()) {
         const line = ctx.sm.applyStatus(id, rawJson)
@@ -290,6 +301,7 @@ async function main(): Promise<void> {
     maybeRunDevshot(first.win, first.sm)
   } else {
     await ensureClaudeHooks(first.win)
+    if (!first.win.isDestroyed()) await ensureCodexHooks(first.win)
   }
 }
 

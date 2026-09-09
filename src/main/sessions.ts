@@ -5,7 +5,10 @@ import * as path from 'node:path'
 import {spawn, type IPty} from 'node-pty'
 import {Terminal} from '@xterm/headless'
 import {SerializeAddon} from '@xterm/addon-serialize'
-import type {SessionInfo, SessionState, SessionsUpdate, TermOut} from '../shared/types'
+import type {AgentKind, SessionInfo, SessionMetrics, SessionState, SessionsUpdate, TermOut} from '../shared/types'
+import {CodexActivity, parseCodexEvent} from './codexEvents'
+import {configureShellIntegration} from './shellIntegration'
+import {resizeTerminal} from '../shared/terminalResize'
 
 const PREVIEW_LINES = 5
 const PREVIEW_SCAN_LIMIT = 200
@@ -13,6 +16,7 @@ const ACTIVITY_WINDOW_MS = 2500
 // リサイズ直後は SIGWINCH による再描画出力が届くため、活動判定から除外する猶予
 const RESIZE_GRACE_MS = 1000
 const HOOK_RUNNING_STALE_MS = 60_000
+const SCREEN_SETTLE_MS = 100
 const TICK_MS = 700
 const CWD_POLL_MS = 2000
 const SCROLLBACK = 3000
@@ -20,6 +24,7 @@ const SNAPSHOT_SCROLLBACK = 2000
 // フロー制御: renderer が未消化のバイト数(UTF-16 長)がこの閾値を超えたら PTY を止める
 const HIGH_WATER = 1_000_000
 const LOW_WATER = 250_000
+const SHELL_PROCESSES = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'ash', 'ksh', 'csh', 'tcsh', 'nu', 'elvish', 'pwsh'])
 
 type HookState = 'running' | 'attention' | 'idle'
 
@@ -53,12 +58,12 @@ export function whenAllPtysExited(timeoutMs: number): Promise<void> {
   })
 }
 
-/** Notification hook の stdin JSON から通知メッセージを取り出す */
-function extractHookMessage(rawBody: string): string | null {
+/** hook の stdin JSON からイベント名や通知メッセージを取り出す */
+function extractHookField(rawBody: string, field: string): string | null {
   if (!rawBody) return null
   try {
     const data = JSON.parse(rawBody) as Record<string, unknown>
-    const message = data.message
+    const message = data?.[field]
     if (typeof message === 'string' && message.trim() !== '') {
       return message.trim().slice(0, 200)
     }
@@ -86,16 +91,25 @@ interface Session {
   // attach 中は renderer の xterm が応答者になるため解除する(二重応答防止)
   answerback: {dispose(): void} | null
   exited: boolean
-  // attach のセンチネル完了までに到着した PTY データの一時置き場
-  pendingDuringAttach: string[] | null
+  // attach のセンチネルまでにパースした出力は snapshot に含め、個別には送らない。
+  snapshotPending: boolean
+  terminalTail: Promise<void>
+  queuedPtyBytes: number
   hookState: HookState | null
   hookStateAt: number
   lastOutputAt: number
+  lastContentAt: number
+  activityScreen: string
+  pendingContent: {screen: string; at: number} | null
+  activityExpired: boolean
   bellAt: number
   paused: boolean
   lastLoggedState: SessionState | null
-  metrics: {model?: string; contextPct?: number; costUsd?: number} | null
+  metrics: SessionMetrics | null
   attentionMessage: string | null
+  activeAgent: AgentKind | null
+  codex: CodexActivity | null
+  codexRunId: string | null
 }
 
 export class SessionManager {
@@ -113,6 +127,8 @@ export class SessionManager {
   onTermOut: (payload: TermOut) => void = () => {}
   /** 状態が変化した瞬間に呼ばれる(通知・バッジ用) */
   onStateChange: (info: SessionInfo, prev: SessionState | null) => void = () => {}
+  /** 完了を示す hook でのみ通知する(静穏化や中断は完了ではない)。 */
+  onResponseComplete: (info: SessionInfo) => void = () => {}
   /** OSC 52 によるクリップボード書き込み要求(main 側で Electron の clipboard へ接続する) */
   onClipboardWrite: (text: string) => void = () => {}
 
@@ -144,11 +160,16 @@ export class SessionManager {
       env[k] = v
     }
     delete env.ELECTRON_RUN_AS_NODE
+    // 外側の Codex のフラグを持ち込まず、このシェルで起動した CLI にだけ設定する。
+    delete env.CLAUDE_TERM_CODEX
     env.LANG = env.LANG || 'ja_JP.UTF-8'
     env.COLORTERM = 'truecolor'
     env.TERM_PROGRAM = 'claude-term'
     env.CLAUDE_TERM_SESSION = id
     env.CLAUDE_TERM_PORT = String(this.hookPort)
+    env.CLAUDE_TERM_EXECUTABLE = process.execPath
+    env.CLAUDE_TERM_CODEX_RELAY = path.join(__dirname, 'codexHookRelay.js')
+    configureShellIntegration(shell, env)
 
     // アクティブセッションと同じディレクトリで開く(無ければホーム)
     const active = this.activeId ? this.sessions.get(this.activeId) : undefined
@@ -181,22 +202,55 @@ export class SessionManager {
       serialize,
       answerback: null,
       exited: false,
-      pendingDuringAttach: null,
+      snapshotPending: false,
+      terminalTail: Promise.resolve(),
+      queuedPtyBytes: 0,
       hookState: null,
       hookStateAt: 0,
       lastOutputAt: Date.now(),
+      lastContentAt: 0,
+      activityScreen: '',
+      pendingContent: null,
+      activityExpired: false,
       bellAt: 0,
       paused: false,
       lastLoggedState: null,
       metrics: null,
       attentionMessage: null,
+      activeAgent: null,
+      codex: null,
+      codexRunId: null,
     }
     this.enableAnswerback(session)
+    term.onTitleChange((title) => {
+      if (session.exited || session.activeAgent !== 'codex' || !session.codex?.applyTerminalTitle(title)) return
+      session.hookState = session.codex.state
+      session.attentionMessage = session.codex.message
+      session.hookStateAt = Date.now()
+      this.emitIfChanged(true)
+    })
+    // PTY はカーソル点滅や同じ画面の再描画でも出力する。
+    // Claude の Stop 取りこぼし対策は、パース後の表示内容が変わったときだけ延長する。
+    term.onWriteParsed(() => {
+      if (session.activeAgent !== 'claude' || session.hookState !== 'running' || session.activityExpired) return
+      const screen = this.screenOf(session)
+      const now = Date.now()
+      if (now - this.lastResizeAt <= RESIZE_GRACE_MS) {
+        session.activityScreen = screen
+        session.pendingContent = null
+      } else {
+        // 消去と再描画が別バッチに分かれても、短時間で元の画面へ戻れば活動に数えない。
+        session.pendingContent = screen === session.activityScreen
+          ? null : {screen, at: session.pendingContent?.at ?? now}
+      }
+    })
     term.onBell(() => {
       if (this.activeId !== session.id) session.bellAt = Date.now()
     })
     // OSC 9 (iTerm 系の通知シーケンス) も要注目として拾う
-    term.parser.registerOscHandler(9, () => {
+    term.parser.registerOscHandler(9, (data) => {
+      // OSC 9;4 は進捗バーの制御であり、ユーザーへの通知ではない。
+      if (data.startsWith('4;')) return true
       if (this.activeId !== session.id) session.bellAt = Date.now()
       return true
     })
@@ -233,6 +287,11 @@ export class SessionManager {
       this.disableAnswerback(session)
       // シェルが死んだ以上 claude も居ないので hook 由来の状態は捨てる(改行支援のゲートにも効く)
       session.hookState = null
+      session.activeAgent = null
+      session.codex = null
+      session.codexRunId = null
+      session.metrics = null
+      session.attentionMessage = null
       // signal は macOS/Linux では常に数値(型が optional なのは Windows 向け)
       const sig = signal ?? 0
       if (sig === 0) {
@@ -255,10 +314,9 @@ export class SessionManager {
 
   /**
    * セッションをメイン表示に切り替える。
-   * xterm の write は非同期のため、空 write のコールバック(センチネル)で
-   * 「それ以前の全データがパース済み」の瞬間を捉えて serialize する。
-   * センチネル待ちの間に届いたデータは pendingDuringAttach に溜めて直後に flush し、
-   * スナップショットとの欠落・重複をゼロにする。
+   * xterm の write 完了を待つキューで、既存出力をパースしてから serialize する。
+   * それ以前の出力は snapshot に含め、それ以降の出力はパース後に個別送信する。
+   * resize も同じキューに並べ、snapshot の寸法と出力順を一致させる。
    */
   attach(id: string): void {
     const next = this.sessions.get(id)
@@ -268,24 +326,20 @@ export class SessionManager {
       if (prev) {
         this.enableAnswerback(prev)
         this.resumeIfPaused(prev)
-        prev.pendingDuringAttach = null
+        prev.snapshotPending = false
       }
     }
     this.activeId = id
     next.bellAt = 0
-    next.pendingDuringAttach = []
+    next.snapshotPending = true
     const epoch = ++this.attachEpoch
-    next.term.write('', () => {
+    void this.queueTerminal(next, () => {
       if (this.attachEpoch !== epoch || this.activeId !== id) return
       this.disableAnswerback(next)
       const snapshot = next.serialize.serialize({scrollback: SNAPSHOT_SCROLLBACK})
       this.unackedBytes = 0
-      this.emitToRenderer(next, {kind: 'snapshot', id, data: snapshot})
-      const pending = next.pendingDuringAttach ?? []
-      next.pendingDuringAttach = null
-      for (const chunk of pending) {
-        this.emitToRenderer(next, {kind: 'data', id, data: chunk})
-      }
+      next.snapshotPending = false
+      this.emitToRenderer(next, {kind: 'snapshot', id, data: snapshot, cols: next.term.cols, rows: next.term.rows})
     })
     this.emitIfChanged(true)
   }
@@ -364,40 +418,144 @@ export class SessionManager {
     this.cols = cols
     this.rows = rows
     this.lastResizeAt = Date.now()
-    // 全セッションをメイン表示の寸法に常時揃える(attach 時の再折返し崩れを防ぐ)。
-    // headless を先に resize してから PTY に伝える
+    // 受信済みの出力を旧寸法でパースしてから、寸法変更を同じストリームへ送る。
+    // PTY の SIGWINCH による新寸法の出力も、必ず resize 通知より後になる。
     for (const s of this.sessions.values()) {
-      s.term.resize(cols, rows)
-      if (!s.exited) {
+      void this.queueTerminal(s, () => {
+        let reflowCursorLine = true
         try {
-          s.pty.resize(cols, rows)
+          // macOS の node-pty は前景プロセスを取得する。シェルの行編集は自身の再描画へ任せる。
+          // シェル自身で動くスクリプトも同名になるため、その場合は従来の resize を維持する。
+          reflowCursorLine = !SHELL_PROCESSES.has(path.basename(s.pty.process).replace(/^-+/, ''))
         } catch {
-          // race で死んでいたら無視
+          // 前景プロセスが取れない場合も、表示済みの内容とカーソル位置を保持する。
         }
-      }
+        if (reflowCursorLine) resizeTerminal(s.term, cols, rows)
+        else s.term.resize(cols, rows)
+        this.lastResizeAt = Date.now()
+        s.activityScreen = this.screenOf(s)
+        s.pendingContent = null
+        if (this.activeId === s.id && !s.snapshotPending) {
+          this.emitToRenderer(s, {kind: 'resize', id: s.id, cols, rows, reflowCursorLine})
+        }
+        if (!s.exited) {
+          try {
+            s.pty.resize(cols, rows)
+          } catch {
+            // race で死んでいたら無視
+          }
+        }
+      })
     }
   }
 
   ack(bytes: number): void {
     if (!Number.isFinite(bytes) || bytes < 0) return
     this.unackedBytes = Math.max(0, this.unackedBytes - bytes)
-    if (this.unackedBytes < LOW_WATER && this.activeId) {
+    if (this.activeId) {
       const s = this.sessions.get(this.activeId)
-      if (s) this.resumeIfPaused(s)
+      if (s && this.unackedBytes + s.queuedPtyBytes < LOW_WATER) this.resumeIfPaused(s)
     }
   }
 
   setHookState(id: string, state: string, rawBody = ''): void {
     const s = this.sessions.get(id)
-    if (!s) return
+    if (!s || s.exited || !['running', 'attention', 'idle', 'clear'].includes(state)) return
+    // CLI の存在を追跡できる間は、遅れた Claude hook や子プロセスで提供元を上書きしない。
+    if (s.codexRunId) return
+    // Codex の後へ遅れて到着した Claude の終了イベントで表示を消さない。
+    if (state === 'clear' && s.activeAgent !== 'claude') return
+    const completed = state === 'idle' && (!rawBody || extractHookField(rawBody, 'hook_event_name') === 'Stop') &&
+      s.activeAgent === 'claude' &&
+      (s.hookState === 'running' || s.hookState === 'attention')
     if (state === 'clear') {
       s.hookState = null
       s.metrics = null // claude セッション終了とともにメトリクスも消す
       s.attentionMessage = null
+      s.activeAgent = null
     } else {
+      if (s.activeAgent !== 'claude') s.metrics = null
+      s.activeAgent = 'claude'
+      s.codex = null
       s.hookState = state as HookState
-      s.attentionMessage = state === 'attention' ? extractHookMessage(rawBody) : null
+      s.attentionMessage = state === 'attention' ? extractHookField(rawBody, 'message') : null
+      if (state === 'running') {
+        s.activityScreen = this.screenOf(s)
+        s.pendingContent = null
+        s.activityExpired = false
+      }
     }
+    s.hookStateAt = Date.now()
+    this.emitIfChanged(true)
+    if (completed) this.onResponseComplete(this.toInfo(s))
+  }
+
+  /** CLI の存在だけを記録する。実際のスレッド・使用量・実行状態は hook で取得する。 */
+  setCodexProcess(id: string, runId: string, event: 'start' | 'exit'): void {
+    const s = this.sessions.get(id)
+    if (!s || s.exited || !/^[A-Za-z0-9_-]{1,128}$/.test(runId)) return
+    if (event === 'exit') {
+      if (s.codexRunId !== runId) return
+      s.codexRunId = null
+      this.clearCodexSession(id)
+      return
+    }
+    if (event !== 'start' || s.codexRunId === runId) return
+    s.codexRunId = runId
+    s.activeAgent = 'codex'
+    s.codex = null
+    s.hookState = null
+    s.metrics = null
+    s.attentionMessage = null
+    s.bellAt = 0
+    this.emitIfChanged(true)
+  }
+
+  setCodexHook(id: string, rawBody: string): void {
+    const s = this.sessions.get(id)
+    const e = parseCodexEvent(rawBody)
+    if (!s || s.exited || !e) return
+    if (e.event === 'SessionStart') {
+      if (e.agentId || (e.source && !['startup', 'resume', 'clear'].includes(e.source))) return
+      s.codex = new CodexActivity(e.sessionId)
+      s.codex.model = e.model
+    } else if (!s.codex) {
+      // /hooks で途中から有効化した場合も、最初の処理イベントから検知できる。
+      if (!['UserPromptSubmit', 'PreToolUse', 'PermissionRequest'].includes(e.event) || e.agentId) return
+      s.codex = new CodexActivity(e.sessionId)
+    }
+    if (s.codex.sessionId !== e.sessionId || s.codex.ended) return
+    const completed = s.codex.apply(e)
+    if (s.codex.ended) {
+      s.activeAgent = s.codexRunId ? 'codex' : null
+      s.hookState = null
+      s.attentionMessage = null
+      s.metrics = null
+      s.bellAt = 0
+      s.lastOutputAt = 0
+    } else {
+      s.activeAgent = 'codex'
+      s.hookState = s.codex.state
+      s.attentionMessage = s.codex.message
+      s.metrics = s.codex.model || s.codex.usage
+        ? {...s.codex.usage, ...(s.codex.model ? {model: s.codex.model} : {})} : null
+    }
+    s.hookStateAt = Date.now()
+    this.emitIfChanged(true)
+    if (completed) this.onResponseComplete(this.toInfo(s))
+  }
+
+  clearCodexSession(id: string): void {
+    const s = this.sessions.get(id)
+    // ID のない旧 wrapper の終了通知は、新しい追跡中 CLI を解除できない。
+    if (!s || s.exited || s.activeAgent !== 'codex' || s.codexRunId) return
+    if (s.codex) s.codex.ended = true
+    s.activeAgent = null
+    s.hookState = null
+    s.metrics = null
+    s.attentionMessage = null
+    s.bellAt = 0
+    s.lastOutputAt = 0
     s.hookStateAt = Date.now()
     this.emitIfChanged(true)
   }
@@ -408,7 +566,7 @@ export class SessionManager {
    */
   applyStatus(id: string, rawJson: string): string | null {
     const s = this.sessions.get(id)
-    if (!s) return null
+    if (!s || s.exited || s.activeAgent === 'codex') return null
     let data: Record<string, any>
     try {
       data = JSON.parse(rawJson) as Record<string, any>
@@ -452,6 +610,11 @@ export class SessionManager {
     return s ? s.serialize.serialize({scrollback: SNAPSHOT_SCROLLBACK}) : null
   }
 
+  /** 検証用: 呼出時点までの出力・リサイズ・attach の処理を待つ。 */
+  whenTerminalReady(id: string): Promise<void> {
+    return this.sessions.get(id)?.terminalTail ?? Promise.resolve()
+  }
+
   disposeAll(): void {
     for (const s of this.sessions.values()) {
       if (!s.exited) {
@@ -472,17 +635,34 @@ export class SessionManager {
     const now = Date.now()
     // リサイズ起因の再描画出力を「実行中」と誤認しない
     if (now - this.lastResizeAt > RESIZE_GRACE_MS) s.lastOutputAt = now
-    s.term.write(data)
-    if (this.activeId === s.id) {
-      if (s.pendingDuringAttach) s.pendingDuringAttach.push(data)
-      else this.emitToRenderer(s, {kind: 'data', id: s.id, data})
-    }
+    s.queuedPtyBytes += data.length
+    this.pauseIfBacklogged(s)
+    void this.queueTerminal(s, async () => {
+      await new Promise<void>((resolve) => s.term.write(data, resolve))
+      s.queuedPtyBytes -= data.length
+      if (this.sessions.get(s.id) === s && this.activeId === s.id && !s.snapshotPending) {
+        this.emitToRenderer(s, {kind: 'data', id: s.id, data})
+      }
+    })
+  }
+
+  private queueTerminal(s: Session, operation: () => void | Promise<void>): Promise<void> {
+    // xterm の write callback 内で resize/reset を再入させず、後続出力も追い越させない。
+    s.terminalTail = s.terminalTail.then(() => {
+      if (this.sessions.get(s.id) === s) return operation()
+    })
+    return s.terminalTail
   }
 
   private emitToRenderer(s: Session, payload: TermOut): void {
     this.onTermOut(payload)
-    this.unackedBytes += payload.data.length
-    if (!s.paused && this.unackedBytes > HIGH_WATER) {
+    if (payload.kind !== 'resize') this.unackedBytes += payload.data.length
+    this.pauseIfBacklogged(s)
+  }
+
+  private pauseIfBacklogged(s: Session): void {
+    // parse 待ちも含めないと、処理キューへ出力が積まれている間に PTY を止められない。
+    if (this.activeId === s.id && !s.paused && this.unackedBytes + s.queuedPtyBytes > HIGH_WATER) {
       s.paused = true
       try {
         s.pty.pause()
@@ -518,16 +698,38 @@ export class SessionManager {
 
   private stateOf(s: Session): SessionState {
     if (s.exited) return 'exited'
+    if (s.activeAgent === 'codex' && s.hookState === null) return 'unknown'
     const now = Date.now()
     if (s.hookState === 'attention') return 'attention'
     if (s.hookState === 'idle') return 'idle'
     if (s.hookState === 'running') {
-      // クラッシュ等で SessionEnd が発火しなかった場合の固着防止
-      if (now - Math.max(s.hookStateAt, s.lastOutputAt) < HOOK_RUNNING_STALE_MS) return 'running'
+      // Codex は無出力の推論中も実行を継続する。Stop/Interrupt/SessionEnd を優先する。
+      if (s.activeAgent === 'codex') return 'running'
+      if (!s.activityExpired && s.pendingContent) {
+        if (now - s.pendingContent.at < SCREEN_SETTLE_MS) return 'running'
+        s.activityScreen = s.pendingContent.screen
+        s.lastContentAt = s.pendingContent.at
+        s.pendingContent = null
+      }
+      // 中断では Stop が発火しない。再描画を除く活動が途絶えたら待機へ戻す。
+      if (!s.activityExpired && now - Math.max(s.hookStateAt, s.lastContentAt) < HOOK_RUNNING_STALE_MS) return 'running'
+      // 一度待機と判定したら、下書きの文字エコー等では再開せず次の hook を待つ。
+      s.activityExpired = true
+      // hook があるセッションを生の PTY 出力で実行中に戻さない。
+      return s.bellAt && this.activeId !== s.id ? 'attention' : 'idle'
     }
     if (s.bellAt && this.activeId !== s.id) return 'attention'
     if (now - s.lastOutputAt < ACTIVITY_WINDOW_MS) return 'running'
     return 'idle'
+  }
+
+  private screenOf(s: Session): string {
+    const buf = s.term.buffer.active
+    const lines: string[] = []
+    for (let y = buf.baseY; y < buf.baseY + s.term.rows; y++) {
+      lines.push(buf.getLine(y)?.translateToString(true) ?? '')
+    }
+    return lines.join('\n').trimEnd()
   }
 
   private previewOf(s: Session): string[] {
@@ -571,7 +773,7 @@ export class SessionManager {
       preview: this.previewOf(s),
       metrics: s.metrics,
       attentionMessage: s.attentionMessage,
-      claudeActive: s.hookState !== null,
+      activeAgent: s.activeAgent,
     }
   }
 

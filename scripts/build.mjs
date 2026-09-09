@@ -43,6 +43,14 @@ await Promise.all([
   }),
   esbuild.build({
     ...common,
+    entryPoints: ['src/main/codexHookRelay.ts'],
+    outfile: 'dist/main/codexHookRelay.js',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+  }),
+  esbuild.build({
+    ...common,
     entryPoints: ['src/preload/preload.ts'],
     outfile: 'dist/preload/preload.js',
     platform: 'node',

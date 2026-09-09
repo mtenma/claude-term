@@ -15,6 +15,19 @@ if [ -n "$CLAUDE_TERM_PORT" ] && [ -n "$CLAUDE_TERM_SESSION" ]; then
 fi
 `
 
+function readConsentSettings(consentPath: string): Record<string, unknown> | undefined {
+  try {
+    const settings: unknown = JSON.parse(fs.readFileSync(consentPath, 'utf8'))
+    if (typeof settings === 'object' && settings !== null && !Array.isArray(settings)) {
+      return settings as Record<string, unknown>
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+  }
+  console.warn('[hooks] config.json を読み込めないため hooks 連携をスキップします')
+  return undefined
+}
+
 /**
  * ~/.claude/settings.json へガード付き hooks を追記する(初回は同意ダイアログ)。
  * - ガード: $CLAUDE_TERM_PORT が無い通常ターミナルでは no-op
@@ -26,13 +39,9 @@ export async function ensureClaudeHooks(win: BrowserWindow): Promise<void> {
   const statuslinePath = path.join(os.homedir(), '.claude', 'claude-term-statusline.sh')
   const consentPath = path.join(app.getPath('userData'), 'config.json')
 
-  let consent: string | undefined
-  try {
-    consent = (JSON.parse(fs.readFileSync(consentPath, 'utf8')) as {hooksConsent?: string})
-      .hooksConsent
-  } catch {
-    // 未記録
-  }
+  const consentSettings = readConsentSettings(consentPath)
+  if (!consentSettings) return
+  const consent = consentSettings.hooksConsent
   if (consent === 'denied') return
 
   let raw = ''
@@ -66,10 +75,12 @@ export async function ensureClaudeHooks(win: BrowserWindow): Promise<void> {
         '書換え前のファイルは settings.json.backup-claude-term に保存します。削除手順は README を参照してください。',
     })
     const granted = r.response === 0
+    const currentConsentSettings = readConsentSettings(consentPath)
+    if (!currentConsentSettings) return
     fs.mkdirSync(path.dirname(consentPath), {recursive: true})
     fs.writeFileSync(
       consentPath,
-      JSON.stringify({hooksConsent: granted ? 'granted' : 'denied'}, null, 2),
+      JSON.stringify({...currentConsentSettings, hooksConsent: granted ? 'granted' : 'denied'}, null, 2),
     )
     if (!granted) return
   }

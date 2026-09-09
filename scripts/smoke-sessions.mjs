@@ -11,9 +11,13 @@ const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 process.chdir(root)
 
+await import('./smoke-claude-state.mjs')
+await import('./smoke-resize.mjs')
+
 await esbuild.build({
-  entryPoints: ['src/main/sessions.ts'],
-  outfile: 'dist-test/sessions.cjs',
+  entryPoints: {sessions: 'src/main/sessions.ts', terminalResize: 'src/shared/terminalResize.ts'},
+  outdir: 'dist-test',
+  outExtension: {'.js': '.cjs'},
   bundle: true,
   platform: 'node',
   format: 'cjs',
@@ -23,6 +27,7 @@ await esbuild.build({
 })
 
 const {SessionManager} = require(path.join(root, 'dist-test/sessions.cjs'))
+const {resizeTerminal} = require(path.join(root, 'dist-test/terminalResize.cjs'))
 const {Terminal} = require('@xterm/headless')
 const {SerializeAddon} = require('@xterm/addon-serialize')
 
@@ -80,7 +85,11 @@ const ref = new Terminal({cols: 80, rows: 24, scrollback: 3000, allowProposedApi
 const refSer = new SerializeAddon()
 ref.loadAddon(refSer)
 for (let i = lastSnapshotIndex; i >= 0 && i < received.length; i++) {
-  ref.write(received[i].data)
+  const event = received[i]
+  if (event.kind === 'snapshot') ref.reset()
+  if (event.kind === 'resize' && !event.reflowCursorLine) ref.resize(event.cols, event.rows)
+  else if (event.kind !== 'data') resizeTerminal(ref, event.cols, event.rows)
+  if (event.kind !== 'resize') await new Promise((resolve) => ref.write(event.data, resolve))
 }
 await new Promise((r) => ref.write('', r))
 const rebuilt = refSer.serialize({scrollback: 2000})

@@ -8,7 +8,7 @@ import {
 } from '../shared/types'
 
 const api = {
-  createSession: (): Promise<SessionInfo> => ipcRenderer.invoke(CH.sessionCreate),
+  createSession: (): Promise<SessionInfo | null> => ipcRenderer.invoke(CH.sessionCreate),
   killSession: (id: string): Promise<void> => ipcRenderer.invoke(CH.sessionKill, id),
   attachSession: (id: string): void => ipcRenderer.send(CH.sessionAttach, id),
   requestSessions: (): Promise<SessionsUpdate> => ipcRenderer.invoke(CH.sessionsRequest),

@@ -1,4 +1,15 @@
-export type SessionState = 'running' | 'attention' | 'idle' | 'exited'
+export type SessionState = 'running' | 'attention' | 'idle' | 'unknown' | 'exited'
+export type AgentKind = 'claude' | 'codex'
+
+export const AGENT_LABELS: Record<AgentKind, string> = {claude: 'Claude Code', codex: 'Codex'}
+
+export interface SessionMetrics {
+  model?: string
+  contextPct?: number
+  costUsd?: number
+  totalTokens?: number
+  rateLimits?: {remainingPct: number; windowMinutes: number}[]
+}
 
 export interface SessionInfo {
   id: string
@@ -7,12 +18,12 @@ export interface SessionInfo {
   cwd: string
   state: SessionState
   preview: string[]
-  /** statusLine 連携で得た Claude Code セッションの情報(未取得なら null) */
-  metrics: {model?: string; contextPct?: number; costUsd?: number} | null
+  /** Claude の statusLine / Codex hooks で得た情報(未取得なら null) */
+  metrics: SessionMetrics | null
   /** 承認待ちのとき、何の承認を求めているかのメッセージ(不明なら null) */
   attentionMessage: string | null
-  /** hooks 検知により claude が動いているセッションか(改行支援のゲートに使う) */
-  claudeActive: boolean
+  /** hooks で検知したエージェント。通知とツール固有の改行入力に使う */
+  activeAgent: AgentKind | null
 }
 
 export interface SessionsUpdate {
@@ -21,7 +32,8 @@ export interface SessionsUpdate {
 }
 
 export type TermOut =
-  | {kind: 'snapshot'; id: string; data: string}
+  | {kind: 'snapshot'; id: string; data: string; cols: number; rows: number}
+  | {kind: 'resize'; id: string; cols: number; rows: number; reflowCursorLine: boolean}
   | {kind: 'data'; id: string; data: string}
 
 export interface AppearanceSettings {

@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css'
 import './styles.css'
 import {
   DEFAULT_APPEARANCE,
+  AGENT_LABELS,
   type AppearanceSettings,
   type SessionInfo,
   type SessionState,
@@ -14,6 +15,7 @@ import {
   type TermOut,
 } from '../shared/types'
 import type {ClaudeTermApi} from '../preload/preload'
+import {resizeTerminal} from '../shared/terminalResize'
 
 declare global {
   interface Window {
@@ -29,6 +31,7 @@ const STATE_LABELS: Record<SessionState, string> = {
   running: '実行中',
   attention: '承認待ち',
   idle: '待機',
+  unknown: '状態未取得',
   exited: '終了',
 }
 
@@ -137,7 +140,7 @@ term.onData((d) => {
 // テキストは composition イベント経由で届く)。xterm に渡すと CompositionHelper が
 // 変換確定後に keydown を通常キーとして処理し、素の \r が送信されてしまう
 function activeClaude(): boolean {
-  return sessions.find((s) => s.id === activeId)?.claudeActive ?? false
+  return sessions.find((s) => s.id === activeId)?.activeAgent === 'claude'
 }
 term.attachCustomKeyEventHandler((ev) => {
   // Enter の keypress は常に xterm に処理させない。keydown をこのハンドラで横取り
@@ -162,31 +165,64 @@ term.attachCustomKeyEventHandler((ev) => {
   return true
 })
 
+// データのパースと寸法変更を同じ順序で処理する。write は非同期なので、
+// リサイズや reset を先に実行すると、旧寸法向けの出力で文字が上書きされる。
+const terminalOutput: TermOut[] = []
+let applyingOutput = false
+async function applyTerminalOutput(): Promise<void> {
+  if (applyingOutput) return
+  applyingOutput = true
+  try {
+    while (terminalOutput.length) {
+      const p = terminalOutput.shift()!
+      if (p.kind === 'resize') {
+        if (p.reflowCursorLine) resizeTerminal(term, p.cols, p.rows)
+        else term.resize(p.cols, p.rows) // シェルの編集行は SIGWINCH でシェル自身が描き直す
+        continue
+      }
+      const isSnapshot = p.kind === 'snapshot'
+      if (p.kind === 'snapshot') {
+        term.reset()
+        term.resize(p.cols, p.rows)
+      }
+      await new Promise<void>((resolve) => term.write(p.data, resolve))
+      api.termAck(p.data.length)
+      // 新しい端末モードを復元してから focus reporting を送る。
+      if (isSnapshot && p.id === activeId) term.focus()
+    }
+  } finally {
+    applyingOutput = false
+  }
+}
 api.onTermOut((p: TermOut) => {
-  const isSnapshot = p.kind === 'snapshot'
-  if (isSnapshot) term.reset()
-  term.write(p.data, () => {
-    api.termAck(p.data.length)
-    // 新セッションのモードを復元してから focus する。復元前に focus すると、旧 TUI の
-    // focus reporting 応答が新しい PTY へ流れ、待機シェルが出力したように見えてしまう
-    if (isSnapshot && p.id === activeId) term.focus()
-  })
+  terminalOutput.push(p)
+  void applyTerminalOutput()
 })
 
 // ---- リサイズ ----
 
-let resizeTimer: number | undefined
+let resizeFrame: number | undefined
+let requestedCols = 0
+let requestedRows = 0
 function applyFit(): void {
-  try {
-    fit.fit()
-  } catch {
-    return
+  const dimensions = fit.proposeDimensions()
+  if (!dimensions || dimensions.cols < 2 || dimensions.rows < 2 ||
+      !Number.isFinite(dimensions.cols) || !Number.isFinite(dimensions.rows)) return
+  if (dimensions.cols !== requestedCols || dimensions.rows !== requestedRows) {
+    requestedCols = dimensions.cols
+    requestedRows = dimensions.rows
+    // 実際の変更は main が出力ストリームに挿入する resize 通知で行う。
+    // セッションが無いときだけ空の画面をここで合わせる。
+    if (!activeId && !applyingOutput) resizeTerminal(term, dimensions.cols, dimensions.rows)
+    api.termResize(dimensions.cols, dimensions.rows)
   }
-  if (term.cols > 1 && term.rows > 1) api.termResize(term.cols, term.rows)
 }
 new ResizeObserver(() => {
-  window.clearTimeout(resizeTimer)
-  resizeTimer = window.setTimeout(applyFit, 150)
+  if (resizeFrame !== undefined) return
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = undefined
+    applyFit()
+  })
 }).observe(host)
 requestAnimationFrame(applyFit)
 
@@ -378,6 +414,10 @@ function buildCard(s: SessionInfo): HTMLElement {
   const card = document.createElement('div')
   card.className = `card ${s.state}${s.id === activeId ? ' selected' : ''}`
   card.dataset.id = s.id
+  // renderList() はカードを毎回作り直すため、CSS アニメーションが更新のたびに
+  // 先頭へ戻ってしまう。起動からの経過時間を負の animation-delay として与え、
+  // 再構築をまたいでも位相が連続して見えるようにする(実行中の常時アニメ用)
+  card.style.setProperty('--anim-epoch', `-${performance.now()}ms`)
   card.draggable = true
   card.addEventListener('dragstart', (e) => {
     draggingId = s.id
@@ -406,6 +446,10 @@ function buildCard(s: SessionInfo): HTMLElement {
   const state = document.createElement('span')
   state.className = `card-state ${s.state}`
   state.textContent = STATE_LABELS[s.state]
+  if (s.state === 'attention' && s.attentionMessage) state.title = s.attentionMessage
+  if (s.state === 'unknown' && s.activeAgent === 'codex') {
+    state.title = 'Codex は起動しています。状態・モデル・使用量を取得するには、Codex の /hooks で Claude Term の通知を有効にしてください。'
+  }
 
   const close = document.createElement('button')
   close.className = 'card-close'
@@ -420,31 +464,53 @@ function buildCard(s: SessionInfo): HTMLElement {
 
   head.append(title, state, close)
 
-  const preview = document.createElement('pre')
-  preview.className = 'card-preview'
-  preview.textContent = s.preview.join('\n')
-
   card.append(head)
-  if (s.state === 'attention' && s.attentionMessage) {
-    const msg = document.createElement('div')
-    msg.className = 'card-attn-msg'
-    msg.textContent = s.attentionMessage
-    card.append(msg)
+  if (s.activeAgent) {
+    const details = document.createElement('div')
+    details.className = 'card-details'
+    const agent = document.createElement('div')
+    agent.className = 'card-agent'
+    agent.textContent = AGENT_LABELS[s.activeAgent]
+    details.append(agent)
+    if (s.metrics?.model) {
+      const model = document.createElement('span')
+      model.className = 'card-model'
+      model.textContent = s.metrics.model
+      model.title = s.metrics.model
+      details.append(model)
+    }
+    card.append(details)
   }
-  if (s.metrics && (s.metrics.model || s.metrics.contextPct !== undefined || s.metrics.costUsd !== undefined)) {
+  if (s.activeAgent && s.metrics) {
     const metrics = document.createElement('div')
     metrics.className = 'card-metrics'
     const bits: string[] = []
-    if (s.metrics.model) bits.push(s.metrics.model)
-    if (s.metrics.contextPct !== undefined) bits.push(`コンテキスト残${s.metrics.contextPct}%`)
+    if (s.metrics.contextPct !== undefined) bits.push(`コンテキスト残${s.activeAgent === 'codex' ? '約' : ''}${s.metrics.contextPct}%`)
+    if (s.metrics.totalTokens !== undefined) bits.push(`累計${s.metrics.totalTokens.toLocaleString('en-US')} tok`)
+    for (const limit of s.metrics.rateLimits ?? []) {
+      const minutes = limit.windowMinutes
+      const label = minutes === 10080 ? '週間' : minutes % 1440 === 0 ? `${minutes / 1440}日` :
+        minutes % 60 === 0 ? `${minutes / 60}時間` : `${minutes}分`
+      bits.push(`${label}残${limit.remainingPct}%`)
+    }
     if (s.metrics.costUsd !== undefined) bits.push(`$${s.metrics.costUsd.toFixed(2)}`)
-    metrics.textContent = bits.join(' · ')
+    for (const bit of bits) {
+      const item = document.createElement('span')
+      item.textContent = bit
+      item.title = bit
+      metrics.append(item)
+    }
     if (s.metrics.contextPct !== undefined && s.metrics.contextPct <= 20) {
       metrics.classList.add('warn')
     }
-    card.append(metrics)
+    if (bits.length) card.append(metrics)
   }
-  card.append(preview)
+  if (!s.activeAgent) {
+    const preview = document.createElement('pre')
+    preview.className = 'card-preview'
+    preview.textContent = s.preview.join('\n')
+    card.append(preview)
+  }
   card.addEventListener('click', () => {
     if (s.id === activeId) {
       term.focus()
@@ -491,12 +557,21 @@ listEl.addEventListener('drop', (e) => {
   if (draggingId !== null) e.preventDefault()
 })
 
-newBtn.addEventListener('click', () => {
+async function createSession(): Promise<void> {
+  newBtn.disabled = true
   term.blur()
   lastTypedWasSpace = false
   // 新セッションは snapshot 復元後に onTermOut から focus する
-  void api.createSession().catch(() => term.focus())
-})
+  try {
+    await api.createSession()
+  } catch {
+    window.alert('セッションを起動できませんでした。もう一度お試しください。')
+    term.focus()
+  } finally {
+    newBtn.disabled = false
+  }
+}
+newBtn.addEventListener('click', () => void createSession())
 
 api.onSessionsUpdate(applyUpdate)
 void api.requestSessions().then(applyUpdate)
