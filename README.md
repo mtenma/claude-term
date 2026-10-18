@@ -56,6 +56,12 @@ npm run package      # release/ に自分用の .app と DMG を生成
 
 自分のマシンでビルドしたアプリは Gatekeeper の警告なしで起動できます。
 
+### LAN 内のサーバーへ接続する場合
+
+`ping`・`ssh` などで LAN 内の機器に接続するときは、macOS のローカルネットワークアクセスを許可してください。拒否した場合は、システム設定 → プライバシーとセキュリティ → ローカルネットワークで Claude Term を有効にします。開発モードでは Electron と表示される場合があります。
+
+古いビルドで `No route to host` になり、Claude Term が権限一覧にも出ない場合は、修正版をビルドしてアプリを入れ替えてください。更新時の終了操作で既存のターミナルセッションも終了するため、作業を保存してから切り替えます。配布ビルドには LAN アクセスの用途説明を含め、アプリと helper をそれぞれの bundle ID で署名し、Electron と異なる実行ファイル UUID を設定します。
+
 ## Claude Code の状態検知(hooks / statusLine 連携)
 
 「承認待ち=オレンジ」の正確な検知とメトリクス表示のため、初回起動時に同意ダイアログを出した上で `~/.claude/settings.json` に **ガード付き hooks(8件)** と **statusLine 設定** を追記します。
@@ -133,6 +139,7 @@ set -as terminal-features ',xterm-256color:clipboard'
 ```sh
 npm run check   # 型検査
 npm run smoke   # SessionManager のスモークテスト(GUI 不要・attach 切替の欠落/重複ゼロを機械検証)
+node scripts/smoke-mac-package.mjs # パッケージ作成後の署名・UUID・LAN 用途説明
 node scripts/smoke-hooks.mjs           # Claude / Codex hooks の設定マージ
 node scripts/smoke-hook-installers.mjs # 設定保存・同意・失敗時の保全(一時ディレクトリのみ)
 node scripts/smoke-codex.mjs           # Codex relay・状態・通知・セッション分離

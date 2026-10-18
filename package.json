@@ -1,7 +1,7 @@
 {
   "name": "claude-term",
   "productName": "Claude Term",
-  "version": "0.1.5",
+  "version": "0.1.8",
   "description": "Claude Code 専用ターミナル — 複数セッションを1ウィンドウで管理",
   "author": "Masayuki Tenma <tenma@sabira.jp>",
   "private": true,
@@ -29,8 +29,12 @@
       "node_modules/node-pty/**"
     ],
     "npmRebuild": false,
+    "afterPack": "scripts/prepare-mac-package.cjs",
     "mac": {
-      "identity": null,
+      "identity": "-",
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "ターミナルで実行する ping、ssh、開発ツールなどが、同じネットワーク上のサーバーや機器に接続するために使用します。"
+      },
       "category": "public.app-category.developer-tools",
       "target": [
         {
