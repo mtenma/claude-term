@@ -13,6 +13,7 @@ process.chdir(root)
 
 await import('./smoke-claude-state.mjs')
 await import('./smoke-resize.mjs')
+await import('./smoke-shell-integration.mjs')
 
 await esbuild.build({
   entryPoints: {sessions: 'src/main/sessions.ts', terminalResize: 'src/shared/terminalResize.ts'},

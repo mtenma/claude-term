@@ -34,10 +34,9 @@ export const CODEX_FUNCTION_BODY = String.raw`(
 
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`
 let zshDirectory: string | undefined
+const zshDirectories = new Set<string>()
 
 function getZshDirectory(): string {
-  if (zshDirectory) return zshDirectory
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-term-shell-'))
   // ZDOTDIR を戻してからユーザーの .zshenv を読むので、後続の .zprofile/.zshrc/
   // .zlogin/.zlogout も本来の場所・順序で読み込まれる。ユーザーのファイルは書き換えない。
   const script = `if [[ -n \${CLAUDE_TERM_ORIGINAL_ZDOTDIR+x} ]]; then
@@ -53,15 +52,29 @@ if [[ -o interactive && -z \${functions[codex]-} ]]; then
   functions[codex]=${shellQuote(CODEX_FUNCTION_BODY)}
 fi
 `
-  fs.writeFileSync(path.join(directory, '.zshenv'), script, {mode: 0o600})
-  zshDirectory = directory
-  process.once('exit', () => {
+  // 長時間の起動中に一時ファイルが消えても、空の ZDOTDIR を渡し続けない。
+  if (zshDirectory) {
     try {
-      fs.rmSync(directory, {recursive: true, force: true})
+      if (fs.readFileSync(path.join(zshDirectory, '.zshenv'), 'utf8') === script) return zshDirectory
     } catch {
-      // 一時ファイルの後片付けで終了を妨げない。
+      // 消失・読込失敗時は、起動途中の別シェルのファイルを上書きせず新規作成する。
     }
-  })
+  }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-term-shell-'))
+  if (zshDirectories.size === 0) {
+    process.once('exit', () => {
+      for (const directory of zshDirectories) {
+        try {
+          fs.rmSync(directory, {recursive: true, force: true})
+        } catch {
+          // 一時ファイルの後片付けで終了を妨げない。
+        }
+      }
+    })
+  }
+  zshDirectories.add(directory)
+  fs.writeFileSync(path.join(directory, '.zshenv'), script, {mode: 0o600, flag: 'wx'})
+  zshDirectory = directory
   return directory
 }
 
@@ -69,9 +82,17 @@ fi
 export function configureShellIntegration(shell: string, env: Record<string, string>): void {
   const name = path.basename(shell)
   if (name === 'zsh') {
+    let directory: string
+    try {
+      directory = getZshDirectory()
+    } catch (error) {
+      // 連携の準備に失敗しても、元の環境で通常のログインシェルは起動できる。
+      console.warn('[shell] zsh 連携を準備できないため通常起動します:', error)
+      return
+    }
     if (env.ZDOTDIR !== undefined) env.CLAUDE_TERM_ORIGINAL_ZDOTDIR = env.ZDOTDIR
     else delete env.CLAUDE_TERM_ORIGINAL_ZDOTDIR
-    env.ZDOTDIR = getZshDirectory()
+    env.ZDOTDIR = directory
   } else if (name === 'bash') {
     // Bash はログイン設定を通常通り読みつつ、export された関数を取り込める。
     env['BASH_FUNC_codex%%'] ??= `() { ${CODEX_FUNCTION_BODY}\n}`

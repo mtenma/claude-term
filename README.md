@@ -138,6 +138,7 @@ node scripts/smoke-hook-installers.mjs # 設定保存・同意・失敗時の保
 node scripts/smoke-codex.mjs           # Codex relay・状態・通知・セッション分離
 node scripts/smoke-resize.mjs          # 日本語の欠落・追記・サイズ変更と出力の順序・切替
 node scripts/smoke-terminal-resize.mjs # 全角境界・カーソル・保存位置・代替画面
+node scripts/smoke-shell-integration.mjs # zsh 起動ファイルの消失・破損・書込失敗からの復旧
 CLAUDE_TERM_SCREENSHOT=/tmp/s.png CLAUDE_TERM_DEMO=states npm run shot  # 自動スクリーンショット
 CLAUDE_TERM_SCREENSHOT=/tmp/codex.png CLAUDE_TERM_DEMO=codex npm start # Codex表示・入力・切替・リサイズ
 CLAUDE_TERM_SCREENSHOT=/tmp/wrap.png CLAUDE_TERM_DEMO=resize-wrap npm start # DOM/WebGL・日本語の出力中リサイズ・シェル入力
@@ -149,6 +150,7 @@ CLAUDE_TERM_SCREENSHOT=/tmp/edge.png CLAUDE_TERM_DEMO=right-edge npm start # 句
 - Electron + node-pty + xterm.js。メインプロセスが全セッションの PTY を保持し、各セッションに `@xterm/headless` のミラー端末を並走させる(VS Code のターミナル復元と同じ構成)
 - カード切替時は `@xterm/addon-serialize` のスナップショットと、その時点の cols/rows を renderer に送り、同じ寸法で復元
 - 出力・寸法変更・スナップショットをセッションごとのキューで順序付け、パース完了後に renderer へ転送。renderer も同じ順序で処理し、旧寸法向けの出力が新寸法で解釈されるのを防止
+- zsh の起動用一時ファイルは新規セッション作成時に確認し、消失・破損時は再作成する。準備できない場合は元の環境でシェルを起動し、ユーザーの設定読込みを維持
 - 全 PTY をメイン表示の cols/rows に合わせ、Codex などの出力途中の行は全角文字と論理的なカーソル位置を保って折り返す。xterm 6 の内部 API への依存は `src/shared/terminalResize.ts` に限定し、更新時は回帰テストで確認
 - macOS の前面プロセスが zsh / bash などのシェルなら、入力行の再描画をシェルに任せる。画面側にも同じ選択を寸法変更とともに通知
 
