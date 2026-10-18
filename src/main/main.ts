@@ -7,6 +7,7 @@ import {startHookServer} from './hookServer'
 import {ensureClaudeHooks} from './claudeHooks'
 import {ensureCodexHooks} from './codexHooks'
 import {maybeRunDevshot} from './devshot'
+import {restrictWebContents} from './windowSecurity'
 
 // 1ウィンドウ = 1 SessionManager。webContents.id をキーに対応関係を持つ
 interface WindowContext {
@@ -304,6 +305,8 @@ async function main(): Promise<void> {
     if (!first.win.isDestroyed()) await ensureCodexHooks(first.win)
   }
 }
+
+restrictWebContents()
 
 app.on('activate', () => {
   if (app.isReady() && contexts.size === 0) void createWindow()

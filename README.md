@@ -151,6 +151,7 @@ CLAUDE_TERM_SCREENSHOT=/tmp/s.png CLAUDE_TERM_DEMO=states npm run shot  # 自動
 CLAUDE_TERM_SCREENSHOT=/tmp/codex.png CLAUDE_TERM_DEMO=codex npm start # Codex表示・入力・切替・リサイズ
 CLAUDE_TERM_SCREENSHOT=/tmp/wrap.png CLAUDE_TERM_DEMO=resize-wrap npm start # DOM/WebGL・日本語の出力中リサイズ・シェル入力
 CLAUDE_TERM_SCREENSHOT=/tmp/edge.png CLAUDE_TERM_DEMO=right-edge npm start # 句読点・太字等の右端欠け・描画位置・ズーム・切替
+CLAUDE_TERM_SCREENSHOT=/tmp/nav.png CLAUDE_TERM_DEMO=nav-guard npm start # ページ移動・新規ウィンドウの抑止
 ```
 
 ### アーキテクチャ概要
@@ -163,6 +164,7 @@ CLAUDE_TERM_SCREENSHOT=/tmp/edge.png CLAUDE_TERM_DEMO=right-edge npm start # 句
 - zsh の起動用一時ファイルは新規セッション作成時に確認し、消失・破損時は再作成する。準備できない場合は元の環境でシェルを起動し、ユーザーの設定読込みを維持
 - 全 PTY をメイン表示の cols/rows に合わせ、Codex などの出力途中の行は全角文字と論理的なカーソル位置を保って折り返す。xterm 6 の内部 API への依存は `src/shared/terminalResize.ts` に限定し、更新時は回帰テストで確認
 - macOS の前面プロセスが zsh / bash などのシェルなら、入力行の再描画をシェルに任せる。画面側にも同じ選択を寸法変更とともに通知
+- すべての画面で、ページ側から始まる移動(ファイルのドロップなど)と新規ウィンドウを止め、画面からの権限要求も拒否する。OSC 8 などの http(s) リンクは既定のブラウザで開く
 
 ## 既知の制限
 

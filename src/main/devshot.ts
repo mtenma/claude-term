@@ -1,4 +1,4 @@
-import {app, type BrowserWindow} from 'electron'
+import {app, BrowserWindow} from 'electron'
 import {checkRightEdge} from './devshotEdge'
 import * as fs from 'node:fs'
 import {CH} from '../shared/types'
@@ -21,6 +21,7 @@ import {checkResizeWrapping} from './devshotResize'
  *   resize … ウィンドウリサイズ後の列数再計算とリフローの検証
  *   resize-wrap … 日本語の未確定行・続きの出力・長いシェル入力を幅変更とともに検証
  *   right-edge  … 日本語の句読点・各書体の描画幅をリサイズとズームで検証
+ *   nav-guard   … 画面側からのページ移動と window.open が抑止されることを検証
  * CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを指定できる。
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
@@ -58,6 +59,23 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
   } else if (scenario === 'resize-wrap') {
     scenarioTask = checkResizeWrapping(win, sm).catch((error) => {
       scenarioFailure = error instanceof Error ? error : new Error(String(error))
+    })
+  } else if (scenario === 'nav-guard') {
+    // ドロップや OSC 8 リンクと同じく、ページ側から始まる移動と新規ウィンドウを試す
+    const url = win.webContents.getURL()
+    const windows = BrowserWindow.getAllWindows().length
+    at(1500, () => {
+      void win.webContents.executeJavaScript(`(() => {
+        window.open('file:///System/Library/')
+        location.href = 'file:///System/Library/'
+      })()`).catch((error) => { scenarioFailure = error })
+    })
+    at(3500, () => {
+      if (win.webContents.getURL() !== url) {
+        scenarioFailure = new Error(`page navigated: ${win.webContents.getURL()}`)
+      } else if (BrowserWindow.getAllWindows().length !== windows) {
+        scenarioFailure = new Error(`window opened: ${BrowserWindow.getAllWindows().length}`)
+      }
     })
   } else if (scenario === 'basic') {
     const a = sm.create()
