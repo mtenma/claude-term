@@ -3,7 +3,7 @@ import type {AgentKind, AppearanceSettings, UsageErrorCode, UsageEvent, UsagePer
 import {AGENT_LABELS} from '../shared/types'
 import type {ClaudeTermUsageApi} from '../preload/usagePreload'
 import {
-  buildSeries, formatValue, isLightColor, labelDay, niceTicks, projectAmount, relativeTime, shortDay,
+  buildSeries, formatBytes, formatValue, isLightColor, labelDay, niceTicks, projectAmount, relativeTime, shortDay,
   stackDays, valueOf, weekday, type DayStack, type Metric, type Series, type ViewOptions,
 } from './costModel'
 
@@ -30,14 +30,20 @@ const svg = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string,
   for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value))
   return node
 }
+const dayKey = (at: number) => {
+  const d = new Date(at)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 let report: UsageReport | null = null
 let period: UsagePeriod = '7d'
 let view: ViewOptions = {metric: 'cost', withCacheRead: false}
-let filter: number | null = null
+/** 絞り込み中のプロジェクトの id。並び順は再集計で入れ替わるため添字では持たない */
+let filter: string | null = null
 let showTable = false
 let focusedDay: number | null = null
 let statusMessage = ''
+let importing = false
 let loadingReport = false
 let reloadQueued = false
 
@@ -55,16 +61,43 @@ function applyAppearance(a: AppearanceSettings): void {
 
 // ---- 取得 ----
 
+const ERROR_TEXT: Record<UsageErrorCode, string> = {
+  db_newer: '新しい版の Claude Term で作られた集計データのため開けません。',
+  db_failed: '集計データを開けませんでした。',
+  service_exited: '集計処理が停止しました。',
+  timeout: '集計に時間がかかっています。',
+  internal: '集計中にエラーが発生しました。',
+}
+
+function selectPeriodRadio(value: UsagePeriod): void {
+  const radio = document.querySelector<HTMLInputElement>(`input[name="period"][value="${value}"]`)
+  if (radio) radio.checked = true
+}
+
 async function loadReport(): Promise<void> {
   if (loadingReport) {
     reloadQueued = true
     return
   }
   loadingReport = true
+  const requested = period
   try {
-    report = await api.getReport(period)
-    if (filter !== null && filter >= report.projects.length) filter = null
-    document.body.dataset.state = 'ready'
+    const result = await api.getReport(requested)
+    // 取得中に期間が変わった・次の取得が控えている場合は、古い結果を描かない
+    if (!reloadQueued && requested === period) {
+      if ('error' in result) {
+        showError(result.error)
+        // 画面の期間を、表示している集計の期間に戻す
+        if (report) {
+          period = report.period
+          selectPeriodRadio(period)
+        }
+      } else {
+        report = result.report
+        document.body.dataset.state = 'ready'
+        showNoticeOnce()
+      }
+    }
   } catch {
     showError('internal')
   } finally {
@@ -77,15 +110,8 @@ async function loadReport(): Promise<void> {
   }
 }
 
-const ERROR_TEXT: Record<UsageErrorCode, string> = {
-  db_newer: '新しい版の Claude Term で作られた集計データのため開けません。',
-  db_failed: '集計データを開けませんでした。',
-  service_exited: '集計処理が停止しました。',
-  timeout: '集計に時間がかかっています。',
-  internal: '集計中にエラーが発生しました。',
-}
-
 function showError(code: UsageErrorCode): void {
+  importing = false
   statusMessage = `${ERROR_TEXT[code]}「更新」で再試行できます。`
   el('progress').textContent = ''
   renderStatus()
@@ -94,21 +120,25 @@ function showError(code: UsageErrorCode): void {
 function onEvent(event: UsageEvent): void {
   const progress = el('progress')
   if (event.kind === 'progress') {
-    const gb = (bytes: number) => (bytes / 1e9).toFixed(bytes >= 1e9 ? 1 : 2)
+    importing = true
     if (event.totalBytes > 0) {
-      progress.textContent = event.firstImport
-        ? `初回の取り込み中 ${gb(event.doneBytes)} / ${gb(event.totalBytes)} GB(会話本文は保存しません)`
-        : `取り込み中 ${gb(event.doneBytes)} / ${gb(event.totalBytes)} GB`
+      const amount = `${formatBytes(event.doneBytes)} / ${formatBytes(event.totalBytes)}`
+      progress.textContent = event.firstImport ? `初回の取り込み中 ${amount}(会話本文は保存しません)` : `取り込み中 ${amount}`
     }
+    if (report === null || report.lastScanAt === null) render()
   } else if (event.kind === 'scanned') {
+    importing = false
     progress.textContent = ''
     const skipped = event.unreadable + event.parseErrors
     statusMessage = skipped > 0 ? `読めなかったファイル・行 ${skipped} 件` : ''
     void loadReport()
   } else if (event.kind === 'error') {
     showError(event.code)
+    render()
   } else if (event.kind === 'deleted') {
+    importing = false
     progress.textContent = ''
+    filter = null
     statusMessage = '集計データを削除しました。「更新」で残っている記録から作り直します。'
     void loadReport()
   }
@@ -119,16 +149,41 @@ function onEvent(event: UsageEvent): void {
 const metricLabel = () => view.metric === 'cost' ? 'API換算額' : 'トークン'
 const fmt = (value: number, short = false) => formatValue(value, view.metric, short)
 
+/** 絞り込み中のプロジェクトの添字。再集計でなくなっていたら解除する */
+function filterIndex(): number | null {
+  if (filter === null || !report) return null
+  const index = report.projects.findIndex((p) => p.id === filter)
+  if (index === -1) {
+    filter = null
+    statusMessage = '絞り込んでいたプロジェクトがこの期間にないため、解除しました。'
+    return null
+  }
+  return index
+}
+
+/** 絞り込み中は、そのプロジェクトだけを系列にする(色は絞り込む前の割り当てを引き継ぐ) */
+function seriesFor(index: number | null): Series[] {
+  const all = buildSeries(report!, view)
+  if (index === null) return all
+  const own = all.find((s) => s.slot !== null && s.projects[0] === index)
+  return [{slot: own?.slot ?? null, name: report!.projects[index].name, projects: [index]}]
+}
+
 function render(): void {
   renderToolbar()
-  if (!report) return
-  const series = buildSeries(report, view)
-  const days = stackDays(report, series, view, filter)
-  renderSummary(days)
+  if (!report) {
+    renderEmpty(0, 0)
+    renderStatus()
+    return
+  }
+  const index = filterIndex()
+  const series = seriesFor(index)
+  const days = stackDays(report, series, view, index)
+  renderSummary(days, index)
   renderLegend(series)
   renderChart(series, days)
   renderDailyTable(series, days)
-  renderProjects(series)
+  renderProjects(index)
   renderStatus()
   renderHelp()
 }
@@ -136,17 +191,25 @@ function render(): void {
 function renderToolbar(): void {
   el('cache-read-option').hidden = view.metric !== 'tokens'
   if (!report) return
-  const first = report.days[0]
-  const last = report.days.at(-1)!
-  el('range').textContent = `${shortDay(first)}〜${shortDay(last)}`
+  el('range').textContent = `${shortDay(report.days[0])}〜${shortDay(report.days.at(-1)!)}`
   for (const node of document.querySelectorAll('.storage-path')) node.textContent = report.storagePath
 }
 
-function renderSummary(days: DayStack[]): void {
+function showNoticeOnce(): void {
+  try {
+    el('notice').hidden = localStorage.getItem(NOTICE_KEY) === '1'
+  } catch {
+    el('notice').hidden = false
+  }
+}
+
+function renderSummary(days: DayStack[], index: number | null): void {
   const r = report!
-  const projects = filter === null ? r.projects : [r.projects[filter]]
+  const filtered = index !== null
+  const projects = filtered ? [r.projects[index]] : r.projects
+  const suffix = filtered ? '(絞り込み中)' : ''
   const total = days.reduce((sum, d) => sum + d.total, 0)
-  el('total-label').textContent = filter === null ? '期間合計' : '期間合計(絞り込み中)'
+  el('total-label').textContent = `期間合計${suffix}`
   el('total-value').textContent = fmt(total, true)
   el('total-value').title = fmt(total)
   const byAgent = (agent: AgentKind) => projects.reduce((sum, p) => sum + valueOf(p[agent], view), 0)
@@ -155,40 +218,45 @@ function renderSummary(days: DayStack[]): void {
   sub.replaceChildren(make('span', '', `Claude ${fmt(byAgent('claude'), true)} · Codex ${fmt(byAgent('codex'), true)}`))
   if (unknown > 0 && view.metric === 'cost') sub.append(make('span', 'tag', '+料金不明'))
 
-  // 今日: 絞り込み中は日別の値から、期間外なら出さない
-  const todayIndex = r.days.length - 1
-  const isTodayInPeriod = r.days[todayIndex] === localToday()
-  let today: string
-  if (filter === null) today = fmt(valueOf(r.today, view), true)
-  else today = isTodayInPeriod ? fmt(days[todayIndex].total, true) : '—'
-  el('today-value').textContent = today
-  el('today-sub').textContent = filter === null && r.today.unknownTokens > 0 && view.metric === 'cost'
-    ? `+料金不明 ${formatValue(r.today.unknownTokens, 'tokens', true)} トークン` : ''
+  // 今日: 絞り込み中は日別の値から求め、期間に今日が含まれなければ出さない
+  el('today-label').textContent = `今日${suffix}`
+  const last = days.at(-1)
+  const todayInPeriod = last?.day === dayKey(r.generatedAt)
+  let todayValue = '—'
+  let todayUnknown = 0
+  if (!filtered) {
+    todayValue = fmt(valueOf(r.today, view), true)
+    todayUnknown = r.today.unknownTokens
+  } else if (todayInPeriod && last) {
+    todayValue = fmt(last.total, true)
+    todayUnknown = last.unknownTokens
+  }
+  el('today-value').textContent = todayValue
+  el('today-sub').textContent = todayUnknown > 0 && view.metric === 'cost'
+    ? `+料金不明 ${formatValue(todayUnknown, 'tokens', true)} トークン` : ''
 
-  const models = filter === null ? r.unknownModels : []
+  el('unknown-label').textContent = `料金不明${suffix}`
   el('unknown-value').textContent = unknown > 0 ? `${formatValue(unknown, 'tokens', true)} トークン` : 'なし'
   const unknownSub = el('unknown-sub')
-  if (unknown > 0) {
-    const names = models.map((m) => m.model || 'モデル不明')
+  unknownSub.title = ''
+  if (unknown === 0) {
+    unknownSub.textContent = ''
+  } else if (filtered) {
+    unknownSub.textContent = '料金表にないモデルの分。金額の合計に含めていません'
+  } else {
+    const names = r.unknownModels.map((m) => m.model || 'モデル不明')
     const head = names.length ? `${names[0]}${names.length > 1 ? ` ほか ${names.length - 1} モデル` : ''}。` : ''
     unknownSub.textContent = `${head}料金表にないため金額の合計に含めていません`
-    unknownSub.title = models.map((m) => `${AGENT_LABELS[m.agent]} ${m.model || 'モデル不明'}: ${formatValue(m.tokens, 'tokens')}`).join('\n')
-  } else {
-    unknownSub.textContent = ''
-    unknownSub.title = ''
+    unknownSub.title = r.unknownModels
+      .map((m) => `${AGENT_LABELS[m.agent]} ${m.model || 'モデル不明'}: ${formatValue(m.tokens, 'tokens')}`).join('\n')
   }
 
   el('caveat').textContent = view.metric === 'cost'
     ? `※ 現在の API 単価(料金表 ${r.pricingCheckedAt} 確認)で換算した目安です。定額プランの請求額ではありません。`
     : `※ トークンは入力・キャッシュ書込・出力の合計です${view.withCacheRead ? '(キャッシュ読込を含む)' : '。キャッシュ読込は含めません'}。`
 
-  el('filter').hidden = filter === null
-  if (filter !== null) el('filter-name').textContent = r.projects[filter].name
-}
-
-function localToday(): string {
-  const d = new Date(report?.generatedAt ?? Date.now())
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  el('filter').hidden = !filtered
+  if (filtered) el('filter-name').textContent = r.projects[index].name
 }
 
 const seriesClass = (s: Series) => s.slot === null ? 's-others' : `s-${s.slot + 1}`
@@ -200,27 +268,39 @@ function swatch(s: Series): HTMLElement {
 }
 
 function renderLegend(series: Series[]): void {
-  const legend = el('legend')
-  legend.replaceChildren(...series.map((s) => {
+  el('legend').replaceChildren(...series.map((s) => {
     const item = make('li')
     item.append(swatch(s), make('span', '', s.name))
     return item
   }))
 }
 
+/** グラフの代わりに出す案内。取り込み中・集計データなし・記録なし・利用なしを分ける */
+function renderEmpty(total: number, unknownTokens: number): boolean {
+  const empty = el('empty')
+  const r = report
+  let message = ''
+  if (!r) message = importing ? '記録を取り込んでいます…' : statusMessage ? '集計を読み込めませんでした。' : '読み込み中…'
+  else if (total === 0) {
+    const hasAny = r.earliest.claude !== null || r.earliest.codex !== null
+    if (importing && (r.lastScanAt === null || !hasAny)) message = '記録を取り込んでいます…'
+    else if (r.lastScanAt === null) message = '集計データはありません。「更新」で Claude Code と Codex の記録から取り込みます。'
+    else if (!hasAny) message = 'Claude Code と Codex の記録が見つかりませんでした。'
+    else if (unknownTokens > 0 && view.metric === 'cost') {
+      message = 'この期間は料金表にないモデルだけが使われています。「トークン」に切り替えると量を確認できます。'
+    } else message = 'この期間の利用はありません。'
+  }
+  empty.textContent = message
+  empty.hidden = message === ''
+  return message !== ''
+}
+
 function renderChart(series: Series[], days: DayStack[]): void {
   const chart = el('chart')
-  const empty = el('empty')
   const total = days.reduce((sum, d) => sum + d.total, 0)
-  const r = report!
-  const hasAny = r.earliest.claude !== null || r.earliest.codex !== null
-  empty.hidden = total > 0
-  if (total === 0) {
-    empty.textContent = !hasAny
-      ? (r.lastScanAt === null ? '記録を取り込んでいます…' : 'Claude Code と Codex の記録が見つかりませんでした。')
-      : 'この期間の利用はありません。'
-  }
-  chart.hidden = showTable || total === 0
+  const unknownTokens = days.reduce((sum, d) => sum + d.unknownTokens, 0)
+  const isEmpty = renderEmpty(total, unknownTokens)
+  chart.hidden = showTable || isEmpty
   // 期間や指標が変わったら前の内訳を残さない(キーボードで選んだ日は下で出し直す)
   if (focusedDay === null || chart.hidden) el('tooltip').hidden = true
   if (chart.hidden) {
@@ -233,8 +313,7 @@ function renderChart(series: Series[], days: DayStack[]): void {
   const margin = CHART_MARGIN
   const plotW = width - margin.left - margin.right
   const plotH = height - margin.top - margin.bottom
-  const max = Math.max(...days.map((d) => d.total))
-  const ticks = niceTicks(max)
+  const ticks = niceTicks(Math.max(...days.map((d) => d.total)))
   const top = ticks.at(-1) || 1
   const y = (value: number) => margin.top + plotH - (value / top) * plotH
   const band = plotW / days.length
@@ -286,7 +365,11 @@ function renderChart(series: Series[], days: DayStack[]): void {
     }
     const hit = svg('rect', {x: margin.left + band * i, y: margin.top, width: band, height: plotH, class: 'hit'})
     hit.addEventListener('mouseenter', () => showTooltip(i, series, days))
-    hit.addEventListener('mouseleave', hideTooltip)
+    // キーボードで選んだ日があれば、マウスが離れたらその日の内訳に戻す
+    hit.addEventListener('mouseleave', () => {
+      if (focusedDay !== null) showTooltip(focusedDay, series, days)
+      else el('tooltip').hidden = true
+    })
     root.append(hit)
   })
   root.append(svg('line', {x1: margin.left, x2: width - margin.right, y1: y(0), y2: y(0), class: 'baseline'}))
@@ -295,15 +378,13 @@ function renderChart(series: Series[], days: DayStack[]): void {
   const peak = days.reduce((best, d) => d.total > best.total ? d : best, days[0])
   chart.setAttribute('aria-label', `日別の積み上げ棒グラフ。${shortDay(days[0].day)}〜${shortDay(days.at(-1)!.day)}、` +
     `${metricLabel()}の合計 ${fmt(total)}。最も多いのは ${shortDay(peak.day)} の ${fmt(peak.total)}。` +
-    '左右の矢印キーで日ごとの内訳を表示します。')
+    '左右の矢印キーで日ごとの内訳を読み上げます。')
   if (focusedDay !== null && focusedDay < days.length) showTooltip(focusedDay, series, days)
 }
 
 function earliestRecordDay(): string | null {
   const values = [report!.earliest.claude, report!.earliest.codex].filter((v): v is number => v !== null)
-  if (!values.length) return null
-  const d = new Date(Math.min(...values))
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return values.length ? dayKey(Math.min(...values)) : null
 }
 
 function showTooltip(index: number, series: Series[], days: DayStack[]): void {
@@ -318,13 +399,15 @@ function showTooltip(index: number, series: Series[], days: DayStack[]): void {
     list.append(item)
   }
   tip.replaceChildren(head, list)
+  const notes: string[] = []
   if (day.unknownTokens > 0 && view.metric === 'cost') {
-    tip.append(make('div', 'tip-note', `料金不明 ${formatValue(day.unknownTokens, 'tokens')} トークン(合計に含めず)`))
+    notes.push(`料金不明 ${formatValue(day.unknownTokens, 'tokens')} トークン(合計に含めず)`)
   }
   if (view.metric === 'tokens' && !view.withCacheRead && day.cacheRead > 0) {
-    tip.append(make('div', 'tip-note', `キャッシュ読込 ${formatValue(day.cacheRead, 'tokens')}(含めず)`))
+    notes.push(`キャッシュ読込 ${formatValue(day.cacheRead, 'tokens')}(含めず)`)
   }
-  if (day.total === 0) tip.append(make('div', 'tip-note', '利用なし'))
+  if (day.total === 0) notes.push('利用なし')
+  for (const note of notes) tip.append(make('div', 'tip-note', note))
   tip.hidden = false
   // 指している棒を隠さないよう、棒の右(はみ出すなら左)に出す
   const chart = el('chart')
@@ -334,18 +417,17 @@ function showTooltip(index: number, series: Series[], days: DayStack[]): void {
   const fits = right + tip.offsetWidth <= chart.offsetLeft + chart.clientWidth
   tip.style.left = `${Math.max(chart.offsetLeft, fits ? right : center - band / 2 - 8 - tip.offsetWidth)}px`
   tip.style.top = `${chart.offsetTop + CHART_MARGIN.top}px`
-}
-
-function hideTooltip(): void {
-  if (focusedDay === null) el('tooltip').hidden = true
+  // キーボードで選んだ日は、ツールチップと同じ内容を読み上げる
+  if (index === focusedDay) {
+    el('chart-live').textContent = [head.textContent, ...rows.map(({s, value}) => `${s.name} ${fmt(value)}`), ...notes]
+      .join('、')
+  }
 }
 
 function renderDailyTable(series: Series[], days: DayStack[]): void {
   const host = el('daily-table')
-  const total = days.reduce((sum, d) => sum + d.total, 0)
-  host.hidden = !showTable || total === 0
+  host.hidden = !showTable || !el('empty').hidden
   el('table-toggle').textContent = showTable ? 'グラフで見る' : '日別の表で見る'
-  el('table-toggle').setAttribute('aria-pressed', String(showTable))
   if (host.hidden) {
     host.replaceChildren()
     return
@@ -375,7 +457,15 @@ function renderDailyTable(series: Series[], days: DayStack[]): void {
   host.replaceChildren(table)
 }
 
-function renderProjects(series: Series[]): void {
+function toggleFilter(id: string): void {
+  filter = filter === id ? null : id
+  focusedDay = null
+  render()
+  // 表は作り直されるので、押したボタンに焦点を戻す
+  document.querySelector<HTMLButtonElement>(`.project-button[data-id="${CSS.escape(id)}"]`)?.focus()
+}
+
+function renderProjects(index: number | null): void {
   const r = report!
   const other: Metric = view.metric === 'cost' ? 'tokens' : 'cost'
   const otherView: ViewOptions = {metric: other, withCacheRead: false}
@@ -385,52 +475,49 @@ function renderProjects(series: Series[]): void {
   el('col-codex').textContent = `Codex(${unit})`
   el('col-other').textContent = other === 'cost' ? 'API換算額' : 'トークン'
   const slotOf = new Map<number, Series>()
-  for (const s of series) if (s.slot !== null) slotOf.set(s.projects[0], s)
+  for (const s of buildSeries(r, view)) if (s.slot !== null) slotOf.set(s.projects[0], s)
   const order = r.projects.map((_, i) => i)
     .sort((a, b) => valueOf(projectAmount(r.projects[b]), view) - valueOf(projectAmount(r.projects[a]), view))
   const body = document.querySelector('#projects tbody')!
-  body.replaceChildren(...order.map((index) => {
-    const p = r.projects[index]
-    const amount = projectAmount(p)
-    const row = make('tr')
-    if (filter !== null && filter !== index) row.classList.add('dimmed')
-    const nameCell = make('th')
-    nameCell.setAttribute('scope', 'row')
-    const s = slotOf.get(index)
-    const button = make('button', 'project-button')
-    button.type = 'button'
-    button.setAttribute('aria-pressed', String(filter === index))
-    if (s) button.append(swatch(s))
-    else button.append(make('span', 'swatch empty-swatch'))
-    button.append(make('span', 'project-name', p.name))
-    button.addEventListener('click', () => {
-      filter = filter === index ? null : index
-      render()
-    })
-    nameCell.append(button)
-    if (p.path) nameCell.append(make('div', 'project-path', p.path))
-    const money = (value: number, unknownTokens: number) => {
-      const cell = make('td', 'num', view.metric === 'cost' ? fmt(value) : formatValue(value, 'tokens'))
-      if (view.metric === 'cost' && unknownTokens > 0) cell.append(make('span', 'tag', '+料金不明'))
-      return cell
-    }
-    row.append(
-      nameCell,
-      money(valueOf(amount, view), amount.unknownTokens),
-      money(valueOf(p.claude, view), p.claude.unknownTokens),
-      money(valueOf(p.codex, view), p.codex.unknownTokens),
-      make('td', 'num', formatValue(valueOf(amount, otherView), other)),
-      make('td', 'num', lastUsed(p.lastUsedAt)),
-    )
-    return row
-  }))
   if (!order.length) {
     const row = make('tr')
     const cell = make('td', 'empty-row', 'この期間の利用はありません。')
     cell.colSpan = 6
     row.append(cell)
     body.replaceChildren(row)
+    return
   }
+  body.replaceChildren(...order.map((i) => {
+    const p = r.projects[i]
+    const amount = projectAmount(p)
+    const row = make('tr')
+    if (index === i) row.classList.add('selected')
+    const nameCell = make('th')
+    nameCell.setAttribute('scope', 'row')
+    const s = slotOf.get(i)
+    const button = make('button', 'project-button')
+    button.type = 'button'
+    button.dataset.id = p.id
+    button.setAttribute('aria-pressed', String(index === i))
+    button.append(s ? swatch(s) : make('span', 'swatch empty-swatch'), make('span', 'project-name', p.name))
+    button.addEventListener('click', () => toggleFilter(p.id))
+    nameCell.append(button)
+    if (p.path) nameCell.append(make('div', 'project-path', p.path))
+    const value = (v: number, unknownTokens: number) => {
+      const cell = make('td', 'num', view.metric === 'cost' ? fmt(v) : formatValue(v, 'tokens'))
+      if (view.metric === 'cost' && unknownTokens > 0) cell.append(make('span', 'tag', '+料金不明'))
+      return cell
+    }
+    row.append(
+      nameCell,
+      value(valueOf(amount, view), amount.unknownTokens),
+      value(valueOf(p.claude, view), p.claude.unknownTokens),
+      value(valueOf(p.codex, view), p.codex.unknownTokens),
+      make('td', 'num', formatValue(valueOf(amount, otherView), other)),
+      make('td', 'num', lastUsed(p.lastUsedAt)),
+    )
+    return row
+  }))
 }
 
 function lastUsed(at: number): string {
@@ -439,25 +526,23 @@ function lastUsed(at: number): string {
 }
 
 function renderStatus(): void {
-  const status = el('status')
   const r = report
-  const parts: string[] = []
+  // 「n 分前」は時間とともに変わるため、読み上げ対象(role=status)の外に出す
+  let updated = ''
   if (r?.lastScanAt) {
     const at = new Date(r.lastScanAt)
-    parts.push(`最終更新 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` +
-      `(${relativeTime(r.lastScanAt, Date.now())})`)
+    updated = `最終更新 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` +
+      `(${relativeTime(r.lastScanAt, Date.now())})`
   }
-  if (statusMessage) parts.push(statusMessage)
-  status.textContent = parts.join(' · ')
+  el('updated').textContent = updated
+  const status = el('status')
+  if (status.textContent !== statusMessage) status.textContent = statusMessage
 
   const notes: string[] = []
   if (r) {
     for (const agent of ['claude', 'codex'] as const) {
       const at = r.earliest[agent]
-      if (at === null) continue
-      const d = new Date(at)
-      const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      if (r.days[0] < day) notes.push(`${AGENT_LABELS[agent]} の記録は ${shortDay(day)} 以降のみ`)
+      if (at !== null && r.days[0] < dayKey(at)) notes.push(`${AGENT_LABELS[agent]} の記録は ${shortDay(dayKey(at))} 以降のみ`)
     }
   }
   el('earliest').textContent = notes.join(' · ')
@@ -472,7 +557,7 @@ function renderHelp(): void {
     'プロジェクトは、セッションを始めたフォルダの git リポジトリでまとめます。途中で別のフォルダへ移った分も、始めたプロジェクトに数えます。',
     'Codex の 1 回の入力が 272K トークンを超えた呼出しは、長文脈の単価で計算します。古い Codex の記録には文脈圧縮の呼出しが残っていないため、その分は含まれません。',
     'ターミナルのカードに出る $ は Claude Code 自身の見積もりで、計算元が違うため一致しないことがあります。',
-    `集計データは ${r.storagePath} に保存し、外部には送りません。Claude Code と Codex の元の記録が消えても集計は残ります。`,
+    `集計データは ${r.storagePath} に保存し、外部には送りません。保存するのはトークン数・モデル・時刻・作業フォルダと、重複を見分けるための ID・記録ファイルの場所で、会話本文は保存しません。Claude Code と Codex の元の記録が消えても集計は残ります。`,
   ]
   el('help-list').replaceChildren(...items.map((text) => make('li', '', text)))
 }
@@ -498,8 +583,11 @@ el<HTMLInputElement>('with-cache-read').addEventListener('change', (e) => {
   render()
 })
 el('filter-clear').addEventListener('click', () => {
+  const id = filter
   filter = null
   render()
+  // 解除ボタンは隠れるので、絞り込んでいたプロジェクトのボタンへ焦点を移す
+  if (id) document.querySelector<HTMLButtonElement>(`.project-button[data-id="${CSS.escape(id)}"]`)?.focus()
 })
 el('table-toggle').addEventListener('click', () => {
   showTable = !showTable
@@ -508,9 +596,15 @@ el('table-toggle').addEventListener('click', () => {
 })
 el('refresh').addEventListener('click', () => {
   statusMessage = ''
+  renderStatus()
   api.refresh()
 })
-el('delete-data').addEventListener('click', () => void api.deleteData())
+el('delete-data').addEventListener('click', () => {
+  api.deleteData().catch(() => {
+    statusMessage = '集計データを削除できませんでした。アプリを終了してから README の手順で削除してください。'
+    renderStatus()
+  })
+})
 
 const chartEl = el('chart')
 chartEl.addEventListener('keydown', (e) => {
@@ -531,14 +625,8 @@ chartEl.addEventListener('blur', () => {
   el('tooltip').hidden = true
 })
 
-const notice = el('notice')
-try {
-  notice.hidden = localStorage.getItem(NOTICE_KEY) === '1'
-} catch {
-  notice.hidden = false
-}
 el('notice-close').addEventListener('click', () => {
-  notice.hidden = true
+  el('notice').hidden = true
   try {
     localStorage.setItem(NOTICE_KEY, '1')
   } catch {

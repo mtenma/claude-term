@@ -103,7 +103,7 @@ export async function checkCostWindow(variant: Variant, onOpen: (win: BrowserWin
   if (size) win.setSize(Number(size[1]), Number(size[2]))
   await new Promise<void>((resolve) => win.webContents.once('did-finish-load', () => resolve()))
   await waitFor(win, `document.body.dataset.state === 'ready' &&
-    document.getElementById('status').textContent.includes('最終更新')`, 'import', 60_000)
+    document.getElementById('updated').textContent.includes('最終更新')`, 'import', 60_000)
 
   // プロジェクト表の枠が縮められて行が隠れていないこと(行が DOM にあるだけでは見えているとは限らない)
   const clipped = await win.webContents.executeJavaScript(`(() => {
@@ -146,6 +146,14 @@ export async function checkCostWindow(variant: Variant, onOpen: (win: BrowserWin
   // フォルダ名の HTML は文字のまま表示され、要素として解釈されない
   if (dom.images !== 0 || !dom.names.includes(XSS_NAME) || dom.title === '1') problems.push('folder name was interpreted as HTML')
   if (dom.overflow > 0 || dom.contentOverflow > 0) problems.push(`horizontal overflow ${dom.overflow}/${dom.contentOverflow}`)
+  // 表の各行の額の和が期間合計と合う(表示の丸めの分だけ許す)
+  const sums = JSON.parse(await win.webContents.executeJavaScript(`JSON.stringify({
+    total: document.getElementById('total-value').title,
+    rows: [...document.querySelectorAll('#projects tbody tr')].map((tr) => tr.children[1].firstChild.textContent),
+  })`)) as {total: string; rows: string[]}
+  const money = (text: string) => Number(text.replace(/[$,]/g, '').replace('<0.01', '0'))
+  const rowSum = sums.rows.reduce((sum, text) => sum + money(text), 0)
+  if (Math.abs(rowSum - money(sums.total)) > 0.01 * sums.rows.length) problems.push(`rows ${rowSum} != total ${sums.total}`)
 
   // キーボードだけで絞り込みとツールチップを操作できる
   win.focus()
@@ -155,8 +163,10 @@ export async function checkCostWindow(variant: Variant, onOpen: (win: BrowserWin
   await delay(300)
   const filtered = await win.webContents.executeJavaScript(`
     !document.getElementById('filter').hidden &&
-    document.querySelector('.project-button').getAttribute('aria-pressed') === 'true'`)
-  if (!filtered) problems.push('keyboard filter did not apply')
+    document.querySelector('.project-button').getAttribute('aria-pressed') === 'true' &&
+    document.activeElement === document.querySelector('.project-button')`)
+  // 表は作り直されるので、押したボタンに焦点が戻っていること(Tab で先頭からやり直しにならない)
+  if (!filtered) problems.push('keyboard filter did not apply or focus was lost')
   // hidden 属性だけでなく、実際に表示から消えていることを確かめる
   const shown = (id: string) => `getComputedStyle(document.getElementById('${id}')).display !== 'none'`
   const leftovers = await win.webContents.executeJavaScript(`(() => {

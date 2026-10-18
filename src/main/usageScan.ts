@@ -156,6 +156,13 @@ function readLines(fd: number, offset: number, size: number, onLine: (line: stri
   return {offset: consumed, longLines}
 }
 
+/** セッションを始めたフォルダのうち、まだプロジェクトを決めていないものを決める */
+export function resolvePendingProjects(store: UsageStore, resolve: ResolveOptions): void {
+  const projects = new Map<string, ProjectInfo>()
+  for (const cwd of store.unresolvedCwds()) projects.set(cwd, resolveProject(cwd, resolve))
+  store.saveProjects(projects)
+}
+
 export async function scanUsage(options: ScanOptions): Promise<ScanResult> {
   const {store} = options
   const now = options.now ?? Date.now
@@ -190,6 +197,22 @@ export async function scanUsage(options: ScanOptions): Promise<ScanResult> {
   }
   options.onProgress?.(0, totalBytes)
 
+  try {
+    await readChanged(options, changed, stored, result, progress)
+  } finally {
+    // 途中で止まっても、取り込めたセッションは「作業フォルダ不明」のままにしない
+    resolvePendingProjects(store, options.resolve)
+  }
+  options.onProgress?.(totalBytes, totalBytes)
+  store.setMeta('lastScanAt', now())
+  store.restrictPermissions()
+  return result
+}
+
+async function readChanged(options: ScanOptions, changed: Candidate[], stored: Map<string, FileRecord>,
+  result: ScanResult, progress: (bytes: number) => void): Promise<void> {
+  const {store} = options
+  const now = options.now ?? Date.now
   for (const file of changed) {
     const previous = stored.get(file.path)
     let fd: number | undefined
@@ -239,12 +262,4 @@ export async function scanUsage(options: ScanOptions): Promise<ScanResult> {
     }
     await yieldToEvents()
   }
-  options.onProgress?.(totalBytes, totalBytes)
-
-  const projects = new Map<string, ProjectInfo>()
-  for (const cwd of store.unresolvedCwds()) projects.set(cwd, resolveProject(cwd, options.resolve))
-  store.saveProjects(projects)
-  store.setMeta('lastScanAt', now())
-  store.restrictPermissions()
-  return result
 }

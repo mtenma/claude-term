@@ -1,7 +1,8 @@
+import * as fs from 'node:fs'
 import type {UsageErrorCode} from '../shared/types'
 import type {ServiceMessage, ServiceRequest, UsageServiceConfig} from './usageProtocol'
-import {buildReport} from './usageReport'
-import {scanUsage} from './usageScan'
+import {buildReport, emptyReport} from './usageReport'
+import {resolvePendingProjects, scanUsage} from './usageScan'
 import {UsageStore, UsageStoreError} from './usageStore'
 
 // コスト画面の集計を担う utilityProcess。SQLite や記録の読込みで異常が起きても、
@@ -67,7 +68,17 @@ port.on('message', ({data}: {data: ServiceRequest}) => {
     void scan()
   } else if (data.type === 'report') {
     try {
-      const report = buildReport({store: openStore(), period: data.period, now: data.now, home: config!.home})
+      const {db, home} = config!
+      // 集計データがない(初回・削除の直後)ときは、取り込むまで DB を作らない
+      if (!store && !fs.existsSync(db)) {
+        post({type: 'report', id: data.id, report: emptyReport(data.period, data.now, db, home)})
+        return
+      }
+      const current = openStore()
+      // 取り込みの途中でも、取り込めたセッションのプロジェクトを決めてから集計する
+      // (取り込みはファイルごとに処理を返すので、書込みと重ならない)
+      resolvePendingProjects(current, {home})
+      const report = buildReport({store: current, period: data.period, now: data.now, home})
       post({type: 'report', id: data.id, report})
     } catch (error) {
       post({type: 'reportError', id: data.id, code: errorCode(error)})

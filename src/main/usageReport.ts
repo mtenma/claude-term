@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 import type {AgentKind, UsageAmount, UsagePeriod, UsageProject, UsageReport} from '../shared/types'
-import {CODEX_LONG_CONTEXT_TOKENS, PRICING_CHECKED_AT, WEB_SEARCH_USD, ratesFor} from './usagePricing'
+import {LONG_CONTEXT_TOKENS, PRICING_CHECKED_AT, WEB_SEARCH_USD, ratesFor} from './usagePricing'
 import type {UsageGroup, UsageStore} from './usageStore'
 
 const BUCKET_MS = 15 * 60_000
@@ -85,22 +85,35 @@ export interface ReportOptions {
   home: string
 }
 
+function periodDays(period: UsagePeriod, now: Date): {days: string[]; start: number; end: number} {
+  const {first, last} = periodRange(period, now)
+  const days: string[] = []
+  for (let d = first; d <= last; d = addDays(d, 1)) days.push(localDay(d))
+  return {days, start: first.getTime(), end: addDays(last, 1).getTime()}
+}
+
+/** 集計データがまだない(初回・削除の直後)ときの空の結果。DB は作らない */
+export function emptyReport(period: UsagePeriod, now: number, file: string, home: string): UsageReport {
+  const {days} = periodDays(period, new Date(now))
+  return {
+    period, days, projects: [], daily: days.map(() => []), today: emptyAmount(), unknownModels: [],
+    earliest: {claude: null, codex: null}, lastScanAt: null, generatedAt: now,
+    pricingCheckedAt: PRICING_CHECKED_AT, storagePath: tilde(file, home),
+  }
+}
+
 export function buildReport({store, period, now, home}: ReportOptions): UsageReport {
   const storagePath = tilde(store.file, home)
   const nowDate = new Date(now)
-  const {first, last} = periodRange(period, nowDate)
-  const days: string[] = []
-  for (let d = first; d <= last; d = addDays(d, 1)) days.push(localDay(d))
+  const {days, start, end} = periodDays(period, nowDate)
   const dayIndex = new Map(days.map((day, index) => [day, index]))
-  const start = first.getTime()
-  const end = addDays(last, 1).getTime()
 
   const projects: UsageProject[] = []
   const projectIndex = new Map<string, number>()
   const cells = new Map<string, UsageAmount>()
   const unknown = new Map<string, {agent: AgentKind; model: string; tokens: number}>()
 
-  for (const group of store.groups(start, end, CODEX_LONG_CONTEXT_TOKENS)) {
+  for (const group of store.groups(start, end, LONG_CONTEXT_TOKENS)) {
     const day = dayIndex.get(localDay(new Date(group.bucket * BUCKET_MS)))
     if (day === undefined) continue
     const {id, kind} = projectIdentity(group)
@@ -138,7 +151,7 @@ export function buildReport({store, period, now, home}: ReportOptions): UsageRep
   // 「今日」は選んだ期間に関係なく出す(先月を見ているときも今日の分がわかるように)
   const today = emptyAmount()
   const todayStart = startOfDay(nowDate)
-  for (const group of store.groups(todayStart.getTime(), addDays(todayStart, 1).getTime(), CODEX_LONG_CONTEXT_TOKENS)) {
+  for (const group of store.groups(todayStart.getTime(), addDays(todayStart, 1).getTime(), LONG_CONTEXT_TOKENS)) {
     addAmount(today, amountOf(group))
   }
 

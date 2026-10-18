@@ -16,19 +16,23 @@ export interface Rates {
 export const WEB_SEARCH_USD = 0.01
 
 /**
- * OpenAI の長文脈の単価に切り替わる 1 回の入力(キャッシュ分を含む)。
- * 公式ページに判定単位の記載がないため、1 回ごとの入力で判定する前提とする
+ * 長文脈の扱いに切り替わる 1 回の入力(キャッシュ分を含む)。
+ * OpenAI は 272K で長文脈の単価になる(公式ページに判定単位の記載がないため 1 回ごとの入力で判定する)。
+ * Claude は 4.6 より前の一部のモデルだけ 200K 超の単価が公式ページで確かめられないため、料金不明にする
  */
-export const CODEX_LONG_CONTEXT_TOKENS = 272_000
+export const LONG_CONTEXT_TOKENS = {codex: 272_000, claude: 200_000} as const
 
 interface ClaudeRates extends Rates {
   /** fast mode の倍率(対応モデルのみ) */
   fast?: number
   /** inference_geo: "us" の 1.1 倍が掛かるか(4.6 以降) */
   usGeo: boolean
+  /** 200K 超の単価を確かめられないモデル。超えた呼出しは料金不明にする */
+  limitedContext?: boolean
 }
 
-const claude = (input: number, cacheRead: number, output: number, usGeo: boolean, fast?: number): ClaudeRates => ({
+const claude = (input: number, cacheRead: number, output: number, usGeo: boolean, fast?: number,
+  limitedContext?: boolean): ClaudeRates => ({
   input,
   cacheWrite5m: input * 1.25,
   cacheWrite1h: input * 2,
@@ -36,6 +40,7 @@ const claude = (input: number, cacheRead: number, output: number, usGeo: boolean
   output,
   usGeo,
   fast,
+  limitedContext,
 })
 
 // 出典: https://platform.claude.com/docs/en/about-claude/pricing (Model pricing / Fast mode / Data residency)
@@ -54,8 +59,8 @@ const CLAUDE: Record<string, ClaudeRates> = {
   'claude-sonnet-5-5': claude(2, 0.1, 10, true),
   'claude-sonnet-5': claude(2, 0.2, 10, true),
   'claude-sonnet-4-6': claude(3, 0.3, 15, true),
-  'claude-sonnet-4-5': claude(3, 0.3, 15, false),
-  'claude-sonnet-4': claude(3, 0.3, 15, false),
+  'claude-sonnet-4-5': claude(3, 0.3, 15, false, undefined, true),
+  'claude-sonnet-4': claude(3, 0.3, 15, false, undefined, true),
   'claude-haiku-4-5': claude(1, 0.1, 5, false),
 }
 
@@ -96,7 +101,7 @@ export function ratesFor(agent: AgentKind, model: string, speed: string, geo: st
     return entry ? (longContext ? entry.long : entry.standard) : null
   }
   const entry = CLAUDE[model.replace(/-\d{8}$/, '')]
-  if (!entry) return null
+  if (!entry || (longContext && entry.limitedContext)) return null
   let factor = 1
   if (speed === 'fast') {
     if (!entry.fast) return null

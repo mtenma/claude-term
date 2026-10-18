@@ -492,8 +492,9 @@ thead th {
   overflow-wrap: anywhere;
 }
 
-tr.dimmed {
-  opacity: 0.45;
+/* 絞り込み中の行。ほかの行を薄くすると文字が読みにくくなるため、選んだ行に背景を付ける */
+tr.selected {
+  background: var(--raise-2);
 }
 
 .empty-row {

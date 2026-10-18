@@ -34,7 +34,7 @@
     <section class="notice" id="notice" hidden>
       <p>
         集計データは <code class="storage-path"></code> に保存します。
-        保存するのはトークン数・モデル・時刻・作業フォルダだけで、会話本文は保存せず、外部にも送りません。
+        保存するのはトークン数・モデル・時刻・作業フォルダと、重複を見分けるための ID・記録ファイルの場所で、会話本文は保存せず、外部にも送りません。
         Claude Code と Codex の元の記録が消えても、集計は残ります(画面下の「集計データを削除」で消せます)。
       </p>
       <button type="button" id="notice-close">閉じる</button>
@@ -47,12 +47,12 @@
         <div class="stat-sub" id="total-sub"></div>
       </div>
       <div class="stat">
-        <div class="stat-label">今日</div>
+        <div class="stat-label" id="today-label">今日</div>
         <div class="stat-value" id="today-value">—</div>
         <div class="stat-sub" id="today-sub"></div>
       </div>
       <div class="stat">
-        <div class="stat-label">料金不明</div>
+        <div class="stat-label" id="unknown-label">料金不明</div>
         <div class="stat-value" id="unknown-value">—</div>
         <div class="stat-sub" id="unknown-sub"></div>
       </div>
@@ -68,12 +68,13 @@
       <div class="card-head">
         <h2 id="daily-title">日別</h2>
         <ul class="legend" id="legend"></ul>
-        <button type="button" class="link-button" id="table-toggle" aria-pressed="false">日別の表で見る</button>
+        <button type="button" class="link-button" id="table-toggle">日別の表で見る</button>
       </div>
       <div class="chart" id="chart" tabindex="0" role="img"></div>
+      <p class="sr-only" id="chart-live" aria-live="polite"></p>
       <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
       <div class="daily-table" id="daily-table" hidden></div>
-      <p class="empty" id="empty" hidden></p>
+      <p class="empty" id="empty">読み込み中…</p>
     </section>
 
     <section class="card table-scroll">
@@ -100,6 +101,7 @@
   </main>
 
   <footer class="statusbar">
+    <span id="updated"></span>
     <span id="status" role="status"></span>
     <span id="progress" class="progress"></span>
     <button type="button" id="refresh">更新</button>

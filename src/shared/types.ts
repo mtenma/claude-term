@@ -111,6 +111,10 @@ export interface UsageReport {
 }
 
 export type UsageErrorCode = 'db_newer' | 'db_failed' | 'service_exited' | 'timeout' | 'internal'
+export const USAGE_ERROR_CODES: readonly UsageErrorCode[] = ['db_newer', 'db_failed', 'service_exited', 'timeout', 'internal']
+
+/** 画面へ返す取得結果。失敗は種類だけを返し、文面は画面側で出し分ける */
+export type UsageReportResult = {report: UsageReport} | {error: UsageErrorCode}
 
 export type UsageEvent =
   | {kind: 'progress'; doneBytes: number; totalBytes: number; firstImport: boolean}

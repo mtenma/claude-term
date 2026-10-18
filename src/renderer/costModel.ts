@@ -97,6 +97,13 @@ export function formatValue(value: number, metric: Metric, short = false): strin
   return `$${value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
 }
 
+/** 取り込み量の表示。1GB 未満は MB で出す(小さい差分が 0.00 GB と出ないように) */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
+  if (bytes > 0 && bytes < 1e6) return '1 MB 未満'
+  return `${Math.round(bytes / 1e6)} MB`
+}
+
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
 const parseDay = (day: string) => {
   const [y, m, d] = day.split('-').map(Number)

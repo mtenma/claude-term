@@ -1,9 +1,9 @@
 import {contextBridge, ipcRenderer} from 'electron'
-import {CH, type AppearanceSettings, type UsageEvent, type UsagePeriod, type UsageReport} from '../shared/types'
+import {CH, type AppearanceSettings, type UsageEvent, type UsagePeriod, type UsageReportResult} from '../shared/types'
 
 // コスト画面だけに公開する API。ターミナルの入力や設定の変更は渡さない
 const api = {
-  getReport: (period: UsagePeriod): Promise<UsageReport> => ipcRenderer.invoke(CH.usageReport, period),
+  getReport: (period: UsagePeriod): Promise<UsageReportResult> => ipcRenderer.invoke(CH.usageReport, period),
   refresh: (): void => ipcRenderer.send(CH.usageRefresh),
   deleteData: (): Promise<boolean> => ipcRenderer.invoke(CH.usageDelete),
   onEvent: (cb: (event: UsageEvent) => void): void => {

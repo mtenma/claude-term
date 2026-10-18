@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS meta (
 `
 
 // 同じ呼出しが複数の行・ファイルにある場合: トークンは大きいほう(書込み途中の値を避ける)、
-// セッション・モデルは時刻の早いほう(fork したファイルの写しより親を優先)を残す。行は消さない
+// セッション・モデルは時刻の早いほう(fork したファイルの写しより親を優先)を残す。
+// speed・geo は Claude では同じ応答の最後の行にだけ書かれるため、空でない値を優先する。行は消さない
 const UPSERT_REQUEST = `
 INSERT INTO requests (key, agent, session_id, ts, model, input, cache_write_5m, cache_write_1h,
   cache_read, output, web_search, speed, geo, prompt)
@@ -110,8 +111,10 @@ ON CONFLICT (key) DO UPDATE SET
     THEN excluded.session_id ELSE session_id END,
   model = CASE WHEN model = '' OR (excluded.ts < ts AND excluded.model <> '')
     THEN excluded.model ELSE model END,
-  speed = CASE WHEN excluded.ts < ts THEN excluded.speed ELSE speed END,
-  geo = CASE WHEN excluded.ts < ts THEN excluded.geo ELSE geo END,
+  speed = CASE WHEN speed = '' OR (excluded.ts < ts AND excluded.speed <> '')
+    THEN excluded.speed ELSE speed END,
+  geo = CASE WHEN geo = '' OR (excluded.ts < ts AND excluded.geo <> '')
+    THEN excluded.geo ELSE geo END,
   ts = min(ts, excluded.ts)
 `
 
@@ -176,6 +179,9 @@ export class UsageStore {
   }
 
   private open(retry = true): DatabaseSync {
+    // シンボリックリンクなどをたどって別のファイルを書き換え・退避しない
+    const existing = fs.lstatSync(this.file, {throwIfNoEntry: false})
+    if (existing && !existing.isFile()) throw new UsageStoreError('db_failed')
     createPrivateFile(this.file)
     const db = new DatabaseSync(this.file, {timeout: 10_000})
     try {
@@ -265,10 +271,11 @@ export class UsageStore {
     }
   }
 
-  groups(start: number, end: number, longContextTokens: number): UsageGroup[] {
+  /** longContext は、1 回の入力がエージェントごとの境目を超えた呼出し */
+  groups(start: number, end: number, limits: Record<AgentKind, number>): UsageGroup[] {
     return this.db.prepare(`
       SELECT r.ts / ${BUCKET_MS} AS bucket, r.agent, r.model, r.speed, r.geo,
-        (r.agent = 'codex' AND r.prompt > ?) AS longContext,
+        (r.prompt > CASE r.agent WHEN 'codex' THEN ? ELSE ? END) AS longContext,
         COALESCE(p.root, s.start_cwd, '') AS root, COALESCE(p.kind, 'unknown') AS kind,
         SUM(r.input) AS input, SUM(r.cache_write_5m) AS cacheWrite5m, SUM(r.cache_write_1h) AS cacheWrite1h,
         SUM(r.cache_read) AS cacheRead, SUM(r.output) AS output, SUM(r.web_search) AS webSearch,
@@ -278,7 +285,7 @@ export class UsageStore {
       LEFT JOIN projects p ON p.cwd = s.start_cwd
       WHERE r.ts >= ? AND r.ts < ?
       GROUP BY bucket, r.agent, r.model, r.speed, r.geo, longContext, root, kind
-    `).all(longContextTokens, start, end) as unknown as UsageGroup[]
+    `).all(limits.codex, limits.claude, start, end) as unknown as UsageGroup[]
   }
 
   earliest(): Record<AgentKind, number | null> {

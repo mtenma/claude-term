@@ -314,6 +314,58 @@ await check('プロジェクト判定: FIFO の .git で止まらず、submodule
   assert.deepEqual(U.resolveProject(home, resolve), {root: home, kind: 'dir'})
 })
 
+await check('境目のケース: speed は最後の行だけ・record と token_count が取り込みをまたぐ・同じ inode で縮む', async () => {
+  const edge = path.join(work, 'edge')
+  const claudeEdge = path.join(edge, 'claude')
+  const codexEdge = path.join(edge, 'codex')
+  const edgeStore = new U.UsageStore(path.join(work, 'edge.sqlite'))
+  const edgeScan = () => U.scanUsage({roots: {claude: [claudeEdge], codex: [codexEdge]}, store: edgeStore, resolve, now: () => NOW})
+  const edgeCost = () => U.buildReport({store: edgeStore, period: '7d', now: NOW, home}).projects
+    .reduce((sum, p) => sum + p.claude.cost + p.codex.cost, 0)
+  // Claude: speed / inference_geo は同じ応答の最後の行にだけ書かれる(fast × us = 2.2 倍)
+  write(path.join(claudeEdge, 'p', 'f.jsonl'), [
+    assistant(20, '2026-10-18T01:00:00Z', alpha, 'F1', 'claude-opus-5-5', usage({input: 1000, out: 10})),
+    assistant(20, '2026-10-18T01:00:00Z', alpha, 'F1', 'claude-opus-5-5', usage({input: 1000, out: 500, speed: 'fast', inference_geo: 'us'})),
+    // Sonnet 4.5 は 200K 超の単価を確かめられないため料金不明、200K 以下は通常の単価
+    assistant(21, '2026-10-18T01:10:00Z', alpha, 'F1', 'claude-sonnet-4-5', usage({input: 250000})),
+    assistant(22, '2026-10-18T01:20:00Z', alpha, 'F1', 'claude-sonnet-4-5', usage({input: 1000})),
+  ])
+  // Codex: 1 回目の取り込みは record で終わり、対応する token_count は次の追記で届く
+  const rollout = path.join(codexEdge, 'sessions', 'rollout-e.jsonl')
+  write(rollout, [meta('2026-10-18T00:00:00Z', 'E1', alpha), turn('gpt-6.1-sol'), rec('2026-10-18T00:01:00Z', 'e1', u(1000, 0, 100))])
+  await edgeScan()
+  // (1000×4 + 500×20) × 2.2 + Sonnet 4.5 の 1000×3。record はまだ数えない
+  near(edgeCost(), 0.0308 + 0.003, '1 回目')
+  fs.appendFileSync(rollout, jsonl([tc('2026-10-18T00:01:00Z', u(1000, 0, 100))]))
+  await edgeScan()
+  // gpt-6.1-sol: 1000×2 + 100×10。record と token_count で二重に数えない
+  near(edgeCost(), 0.0338 + 0.003, '2 回目')
+  const unknown = U.buildReport({store: edgeStore, period: '7d', now: NOW, home}).unknownModels
+  assert.deepEqual(unknown.map((m) => [m.model, m.tokens]), [['claude-sonnet-4-5', 250000]])
+
+  // 同じ inode のまま縮んだ・先頭が書き換わったファイルは最初から読み直し、行は増やさない
+  const total = edgeCost()
+  const claudeFile = path.join(claudeEdge, 'p', 'f.jsonl')
+  const fd = fs.openSync(claudeFile, 'r+')
+  fs.ftruncateSync(fd, 0)
+  fs.writeSync(fd, jsonl([assistant(20, '2026-10-18T01:00:00Z', alpha, 'F1', 'claude-opus-5-5', usage({input: 1000, out: 500, speed: 'fast', inference_geo: 'us'}))]))
+  fs.closeSync(fd)
+  await edgeScan()
+  near(edgeCost(), total, '縮んだファイル')
+  // 読んだ位置を消して全部読み直しても、合計は変わらない
+  execFileSync('/usr/bin/sqlite3', [path.join(work, 'edge.sqlite'), 'DELETE FROM files'])
+  await edgeScan()
+  near(edgeCost(), total, '全部読み直し')
+  edgeStore.close()
+})
+
+await check('集計データがないときは DB を作らずに空の結果を返せる', () => {
+  const file = path.join(work, 'missing.sqlite')
+  const r = U.emptyReport('thisMonth', NOW, file, home)
+  assert.deepEqual([r.days[0], r.days.at(-1), r.projects.length, r.lastScanAt], ['2026-10-01', '2026-10-18', 0, null])
+  assert.equal(fs.existsSync(file), false)
+})
+
 await check('画面: 上位 5 件 + ほか、絞り込みで色を変えない、0 のプロジェクトは描かない', () => {
   const amount = (cost) => ({cost, tokens: cost * 1000, cacheRead: 0, unknownTokens: 0})
   const zero = amount(0)
