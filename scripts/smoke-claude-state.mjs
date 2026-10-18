@@ -57,7 +57,7 @@ vm.runInNewContext(built.outputFiles[0].text, {
   Date: Clock,
   process: {env: {SHELL: '/bin/sh'}, execPath: process.execPath},
   __dirname: path.join(root, 'dist/main'),
-  Buffer, setTimeout, clearTimeout,
+  Buffer, setTimeout, clearTimeout, clearInterval,
   setInterval: () => ({unref() {}}),
   console: {log() {}},
 }, {filename: 'claude-state.cjs'})

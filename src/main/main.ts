@@ -1,6 +1,6 @@
 import {app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell} from 'electron'
 import * as path from 'node:path'
-import {AGENT_LABELS, CH, type SessionInfo, type SessionsUpdate} from '../shared/types'
+import {AGENT_LABELS, CH, type SessionInfo, type SessionsUpdate, type TermAck, type TermInput} from '../shared/types'
 import {SessionManager, whenAllPtysExited} from './sessions'
 import {getAppearance, setAppearance} from './settings'
 import {startHookServer} from './hookServer'
@@ -70,11 +70,11 @@ function registerIpc(): void {
   )
   ipcMain.on(CH.sessionAttach, (e, id: string) => smOf(e.sender)?.attach(id))
   ipcMain.on(CH.sessionsReorder, (e, ids: string[]) => smOf(e.sender)?.reorder(ids))
-  ipcMain.on(CH.termIn, (e, data: string) => smOf(e.sender)?.inputToActive(data))
+  ipcMain.on(CH.termIn, (e, input: TermInput) => smOf(e.sender)?.inputToSession(input))
   ipcMain.on(CH.termResize, (e, size: {cols: number; rows: number}) =>
     smOf(e.sender)?.resize(size.cols, size.rows),
   )
-  ipcMain.on(CH.termAck, (e, bytes: number) => smOf(e.sender)?.ack(bytes))
+  ipcMain.on(CH.termAck, (e, ack: TermAck) => smOf(e.sender)?.ack(ack))
   ipcMain.on(CH.shellOpenExternal, (_e, url: string) => {
     // ターミナル出力由来の文字列なので http(s) 以外は開かない
     if (typeof url === 'string' && /^https?:\/\//.test(url)) void shell.openExternal(url)

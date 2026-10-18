@@ -12,10 +12,10 @@ import {
   type SessionInfo,
   type SessionState,
   type SessionsUpdate,
-  type TermOut,
 } from '../shared/types'
 import type {ClaudeTermApi} from '../preload/preload'
 import {resizeTerminal} from '../shared/terminalResize'
+import {TerminalStream} from './terminalStream'
 
 declare global {
   interface Window {
@@ -126,10 +126,14 @@ function refitForRendererChange(): void {
 }
 
 // 改行支援のため「直前に打った文字がスペースか」を追跡する
+const stream = new TerminalStream(term, api.termInput, api.termAck, (id) => {
+  // 新しい端末モードを復元してから、そのセッションへ focus reporting を送る。
+  if (id === activeId) term.focus()
+})
 let lastTypedWasSpace = false
 term.onData((d) => {
   lastTypedWasSpace = d.endsWith(' ')
-  api.termInput(d)
+  stream.input(d)
 })
 
 // 改行支援:
@@ -140,7 +144,7 @@ term.onData((d) => {
 // テキストは composition イベント経由で届く)。xterm に渡すと CompositionHelper が
 // 変換確定後に keydown を通常キーとして処理し、素の \r が送信されてしまう
 function activeClaude(): boolean {
-  return sessions.find((s) => s.id === activeId)?.activeAgent === 'claude'
+  return sessions.find((s) => s.id === stream.displayedId)?.activeAgent === 'claude'
 }
 term.attachCustomKeyEventHandler((ev) => {
   // Enter の keypress は常に xterm に処理させない。keydown をこのハンドラで横取り
@@ -153,12 +157,12 @@ term.attachCustomKeyEventHandler((ev) => {
   if (ev.key !== 'Enter' || ev.ctrlKey || ev.metaKey || ev.altKey) return true
   const claude = activeClaude()
   if (ev.shiftKey) {
-    api.termInput(claude ? '\\\r' : '\n')
+    stream.input(claude ? '\\\r' : '\n')
     lastTypedWasSpace = false
     return false
   }
   if (claude && lastTypedWasSpace) {
-    api.termInput('\x7f\\\r')
+    stream.input('\x7f\\\r')
     lastTypedWasSpace = false
     return false
   }
@@ -167,36 +171,8 @@ term.attachCustomKeyEventHandler((ev) => {
 
 // データのパースと寸法変更を同じ順序で処理する。write は非同期なので、
 // リサイズや reset を先に実行すると、旧寸法向けの出力で文字が上書きされる。
-const terminalOutput: TermOut[] = []
-let applyingOutput = false
-async function applyTerminalOutput(): Promise<void> {
-  if (applyingOutput) return
-  applyingOutput = true
-  try {
-    while (terminalOutput.length) {
-      const p = terminalOutput.shift()!
-      if (p.kind === 'resize') {
-        if (p.reflowCursorLine) resizeTerminal(term, p.cols, p.rows)
-        else term.resize(p.cols, p.rows) // シェルの編集行は SIGWINCH でシェル自身が描き直す
-        continue
-      }
-      const isSnapshot = p.kind === 'snapshot'
-      if (p.kind === 'snapshot') {
-        term.reset()
-        term.resize(p.cols, p.rows)
-      }
-      await new Promise<void>((resolve) => term.write(p.data, resolve))
-      api.termAck(p.data.length)
-      // 新しい端末モードを復元してから focus reporting を送る。
-      if (isSnapshot && p.id === activeId) term.focus()
-    }
-  } finally {
-    applyingOutput = false
-  }
-}
-api.onTermOut((p: TermOut) => {
-  terminalOutput.push(p)
-  void applyTerminalOutput()
+api.onTermOut((p) => {
+  void stream.accept(p).catch((error) => console.error('[terminal] 出力処理に失敗:', error))
 })
 
 // ---- リサイズ ----
@@ -213,7 +189,7 @@ function applyFit(): void {
     requestedRows = dimensions.rows
     // 実際の変更は main が出力ストリームに挿入する resize 通知で行う。
     // セッションが無いときだけ空の画面をここで合わせる。
-    if (!activeId && !applyingOutput) resizeTerminal(term, dimensions.cols, dimensions.rows)
+    if (!activeId && !stream.busy) resizeTerminal(term, dimensions.cols, dimensions.rows)
     api.termResize(dimensions.cols, dimensions.rows)
   }
 }
@@ -398,7 +374,9 @@ function applyUpdate(u: SessionsUpdate): void {
   if (u.activeId !== activeId) closeSearch(false)
   sessions = u.sessions
   activeId = u.activeId
-  if (activeId === null) term.reset()
+  if (activeId === null) {
+    void stream.accept(null).catch((error) => console.error('[terminal] 画面消去に失敗:', error))
+  }
   placeholder.classList.toggle('hidden', sessions.length > 0)
   renderList()
 }

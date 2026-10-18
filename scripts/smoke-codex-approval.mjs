@@ -35,7 +35,7 @@ vm.runInNewContext(built.outputFiles[0].text, {
   require: specifier => specifier === 'node-pty' ? nodePty : require(specifier),
   process: {env: {SHELL: '/bin/sh'}, execPath: process.execPath},
   __dirname: path.join(root, 'dist/main'), Buffer, setTimeout, clearTimeout,
-  setInterval: () => ({unref() {}}), console: {log() {}},
+  setInterval: () => ({unref() {}}), clearInterval, console: {log() {}},
 }, {filename: 'codex-approval.cjs'})
 
 const sm = new module.exports.SessionManager(0)

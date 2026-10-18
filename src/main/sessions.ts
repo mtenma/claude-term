@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import {spawn, type IPty} from 'node-pty'
 import {Terminal} from '@xterm/headless'
 import {SerializeAddon} from '@xterm/addon-serialize'
-import type {AgentKind, SessionInfo, SessionMetrics, SessionState, SessionsUpdate, TermOut} from '../shared/types'
+import type {AgentKind, SessionInfo, SessionMetrics, SessionState, SessionsUpdate, TermAck, TermInput, TermOut} from '../shared/types'
 import {CodexActivity, parseCodexEvent} from './codexEvents'
 import {configureShellIntegration} from './shellIntegration'
 import {resizeTerminal} from '../shared/terminalResize'
@@ -121,6 +121,9 @@ export class SessionManager {
   private lastResizeAt = 0
   private unackedBytes = 0
   private lastEmitted = ''
+  private readonly tickTimer: NodeJS.Timeout
+  private readonly cwdTimer: NodeJS.Timeout
+  private disposed = false
   activeId: string | null = null
 
   onSessionsUpdate: (update: SessionsUpdate) => void = () => {}
@@ -138,16 +141,19 @@ export class SessionManager {
     private hookPort: number,
     private idPrefix = 's',
   ) {
-    setInterval(() => this.emitIfChanged(false), TICK_MS).unref()
+    this.tickTimer = setInterval(() => this.emitIfChanged(false), TICK_MS)
+    this.tickTimer.unref()
     // シェルの現在ディレクトリを追跡してカードタイトルに反映する
-    setInterval(() => {
+    this.cwdTimer = setInterval(() => {
       for (const s of this.sessions.values()) {
         if (!s.exited) this.refreshCwd(s)
       }
-    }, CWD_POLL_MS).unref()
+    }, CWD_POLL_MS)
+    this.cwdTimer.unref()
   }
 
   create(): SessionInfo {
+    if (this.disposed) throw new Error('SessionManager is disposed')
     const index = ++this.counter
     const id = `${this.idPrefix}${index}`
     const shell = process.env.SHELL || '/bin/zsh'
@@ -284,6 +290,7 @@ export class SessionManager {
     pty.onExit(({signal}) => {
       trackPtyExit()
       session.exited = true
+      if (this.disposed || this.sessions.get(id) !== session) return
       this.disableAnswerback(session)
       // シェルが死んだ以上 claude も居ないので hook 由来の状態は捨てる(改行支援のゲートにも効く)
       session.hookState = null
@@ -321,32 +328,37 @@ export class SessionManager {
   attach(id: string): void {
     const next = this.sessions.get(id)
     if (!next) return
-    if (this.activeId && this.activeId !== id) {
-      const prev = this.sessions.get(this.activeId)
-      if (prev) {
-        this.enableAnswerback(prev)
-        this.resumeIfPaused(prev)
-        prev.snapshotPending = false
-      }
+    const prev = this.activeId ? this.sessions.get(this.activeId) : undefined
+    if (prev && prev !== next) {
+      this.enableAnswerback(prev)
+      prev.snapshotPending = false
     }
     this.activeId = id
     next.bellAt = 0
     next.snapshotPending = true
     const epoch = ++this.attachEpoch
+    this.unackedBytes = 0
+    if (prev) this.updateFlowControl(prev)
+    this.updateFlowControl(next)
     void this.queueTerminal(next, () => {
       if (this.attachEpoch !== epoch || this.activeId !== id) return
       this.disableAnswerback(next)
       const snapshot = next.serialize.serialize({scrollback: SNAPSHOT_SCROLLBACK})
-      this.unackedBytes = 0
       next.snapshotPending = false
-      this.emitToRenderer(next, {kind: 'snapshot', id, data: snapshot, cols: next.term.cols, rows: next.term.rows})
+      this.emitToRenderer(next, {kind: 'snapshot', id, epoch, data: snapshot, cols: next.term.cols, rows: next.term.rows})
     })
     this.emitIfChanged(true)
   }
 
   inputToActive(data: string): void {
-    if (!this.activeId) return
-    const s = this.sessions.get(this.activeId)
+    if (this.activeId) this.inputToSession({id: this.activeId, data})
+  }
+
+  /** パース中の旧画面への応答も、その画面を出力したセッションに戻す。 */
+  inputToSession(input: TermInput): void {
+    if (!input || typeof input.id !== 'string' || typeof input.data !== 'string') return
+    const {id, data} = input
+    const s = this.sessions.get(id)
     if (!s) return
     if (s.exited) {
       // 「終了」カードは Enter で閉じる(画面末尾の案内どおり)。他のキーは無視
@@ -436,7 +448,7 @@ export class SessionManager {
         s.activityScreen = this.screenOf(s)
         s.pendingContent = null
         if (this.activeId === s.id && !s.snapshotPending) {
-          this.emitToRenderer(s, {kind: 'resize', id: s.id, cols, rows, reflowCursorLine})
+          this.emitToRenderer(s, {kind: 'resize', id: s.id, epoch: this.attachEpoch, cols, rows, reflowCursorLine})
         }
         if (!s.exited) {
           try {
@@ -449,12 +461,13 @@ export class SessionManager {
     }
   }
 
-  ack(bytes: number): void {
-    if (!Number.isFinite(bytes) || bytes < 0) return
-    this.unackedBytes = Math.max(0, this.unackedBytes - bytes)
+  ack(ack: TermAck): void {
+    if (!ack || ack.id !== this.activeId || ack.epoch !== this.attachEpoch ||
+        !Number.isSafeInteger(ack.bytes) || ack.bytes < 0) return
+    this.unackedBytes = Math.max(0, this.unackedBytes - ack.bytes)
     if (this.activeId) {
       const s = this.sessions.get(this.activeId)
-      if (s && this.unackedBytes + s.queuedPtyBytes < LOW_WATER) this.resumeIfPaused(s)
+      if (s) this.updateFlowControl(s)
     }
   }
 
@@ -616,6 +629,10 @@ export class SessionManager {
   }
 
   disposeAll(): void {
+    if (this.disposed) return
+    this.disposed = true
+    clearInterval(this.tickTimer)
+    clearInterval(this.cwdTimer)
     for (const s of this.sessions.values()) {
       if (!s.exited) {
         try {
@@ -629,20 +646,24 @@ export class SessionManager {
     }
     this.sessions.clear()
     this.activeId = null
+    this.unackedBytes = 0
+    this.attachEpoch++
   }
 
   private handlePtyData(s: Session, data: string): void {
+    if (this.disposed || this.sessions.get(s.id) !== s) return
     const now = Date.now()
     // リサイズ起因の再描画出力を「実行中」と誤認しない
     if (now - this.lastResizeAt > RESIZE_GRACE_MS) s.lastOutputAt = now
     s.queuedPtyBytes += data.length
-    this.pauseIfBacklogged(s)
+    this.updateFlowControl(s)
     void this.queueTerminal(s, async () => {
       await new Promise<void>((resolve) => s.term.write(data, resolve))
       s.queuedPtyBytes -= data.length
       if (this.sessions.get(s.id) === s && this.activeId === s.id && !s.snapshotPending) {
-        this.emitToRenderer(s, {kind: 'data', id: s.id, data})
+        this.emitToRenderer(s, {kind: 'data', id: s.id, epoch: this.attachEpoch, data})
       }
+      this.updateFlowControl(s)
     })
   }
 
@@ -655,14 +676,16 @@ export class SessionManager {
   }
 
   private emitToRenderer(s: Session, payload: TermOut): void {
-    this.onTermOut(payload)
     if (payload.kind !== 'resize') this.unackedBytes += payload.data.length
-    this.pauseIfBacklogged(s)
+    this.onTermOut(payload)
+    this.updateFlowControl(s)
   }
 
-  private pauseIfBacklogged(s: Session): void {
-    // parse 待ちも含めないと、処理キューへ出力が積まれている間に PTY を止められない。
-    if (this.activeId === s.id && !s.paused && this.unackedBytes + s.queuedPtyBytes > HIGH_WATER) {
+  private updateFlowControl(s: Session): void {
+    if (s.exited || this.disposed || this.sessions.get(s.id) !== s) return
+    // 裏側でもパース待ちを制限し、表示中だけ renderer の未消化分を足す。
+    const backlog = s.queuedPtyBytes + (this.activeId === s.id ? this.unackedBytes : 0)
+    if (!s.paused && backlog > HIGH_WATER) {
       s.paused = true
       try {
         s.pty.pause()
@@ -670,6 +693,8 @@ export class SessionManager {
       } catch {
         s.paused = false
       }
+    } else if (s.paused && backlog < LOW_WATER) {
+      this.resumeIfPaused(s)
     }
   }
 

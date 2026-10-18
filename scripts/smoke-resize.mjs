@@ -58,7 +58,7 @@ vm.runInNewContext(built.outputFiles[0].text, {
   },
   process: {env: {SHELL: '/bin/sh'}, execPath: process.execPath},
   __dirname: path.join(root, 'dist/main'),
-  Buffer, setTimeout, clearTimeout,
+  Buffer, setTimeout, clearTimeout, clearInterval,
   setInterval: () => ({unref() {}}),
   console: {log() {}},
 }, {filename: 'resize-test.cjs'})
@@ -86,7 +86,7 @@ function harness() {
       else if (event.kind !== 'data') resizeTerminal(renderer, event.cols, event.rows)
       if (event.kind !== 'resize') {
         await write(renderer, event.data)
-        sm.ack(event.data.length)
+        sm.ack({id: event.id, epoch: event.epoch, bytes: event.data.length})
       }
     })
   }
@@ -211,7 +211,7 @@ await runCase('parse待ちの出力もflow controlへ含め、古いackで早期
   const chunk = 'q'.repeat(110000)
   for (let i = 0; i < 10; i++) h.output(chunk)
   assert.equal(h.pty.pauses, 1, 'xtermがparseする前に1MiB超の出力を止める')
-  h.sm.ack(chunk.length * 10)
+  h.sm.ack({id: h.session.id, epoch: h.received[0].epoch, bytes: chunk.length * 10})
   assert.equal(h.pty.resumes, 0, 'parse待ちが残る間は古いrendererのackで再開しない')
   await h.settle()
   assert.equal(h.pty.resumes, 1, '処理とackが追いついたらPTYを再開する')

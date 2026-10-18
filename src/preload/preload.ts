@@ -4,6 +4,8 @@ import {
   type AppearanceSettings,
   type SessionInfo,
   type SessionsUpdate,
+  type TermAck,
+  type TermInput,
   type TermOut,
 } from '../shared/types'
 
@@ -13,9 +15,9 @@ const api = {
   attachSession: (id: string): void => ipcRenderer.send(CH.sessionAttach, id),
   requestSessions: (): Promise<SessionsUpdate> => ipcRenderer.invoke(CH.sessionsRequest),
   reorderSessions: (ids: string[]): void => ipcRenderer.send(CH.sessionsReorder, ids),
-  termInput: (data: string): void => ipcRenderer.send(CH.termIn, data),
+  termInput: (input: TermInput): void => ipcRenderer.send(CH.termIn, input),
   termResize: (cols: number, rows: number): void => ipcRenderer.send(CH.termResize, {cols, rows}),
-  termAck: (bytes: number): void => ipcRenderer.send(CH.termAck, bytes),
+  termAck: (ack: TermAck): void => ipcRenderer.send(CH.termAck, ack),
   onSessionsUpdate: (cb: (u: SessionsUpdate) => void): void => {
     ipcRenderer.on(CH.sessionsUpdate, (_e, u: SessionsUpdate) => cb(u))
   },

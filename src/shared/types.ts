@@ -31,10 +31,23 @@ export interface SessionsUpdate {
   activeId: string | null
 }
 
-export type TermOut =
+// 同じセッションへの再接続も区別し、前の表示に対する ACK を持ち込まない。
+export interface TermAck {
+  id: string
+  epoch: number
+  bytes: number
+}
+
+export interface TermInput {
+  id: string
+  data: string
+}
+
+export type TermOut = {epoch: number} & (
   | {kind: 'snapshot'; id: string; data: string; cols: number; rows: number}
   | {kind: 'resize'; id: string; cols: number; rows: number; reflowCursorLine: boolean}
   | {kind: 'data'; id: string; data: string}
+)
 
 export interface AppearanceSettings {
   /** 背景の不透明度(%) 20-100。100 未満でウィンドウ背景が透過する */

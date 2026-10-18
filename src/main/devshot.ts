@@ -70,7 +70,18 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
     const a = sm.create()
     sm.attach(a.id)
     at(1500, () => {
-      sm.writeTo(a.id, 'head -c 3000000 /dev/urandom | base64; echo FLOOD_DONE\r')
+      void win.webContents.executeJavaScript(`(() => {
+        const counts = window.__flood = {received: 0, parsed: 0, writes: 0}
+        window.claudeTerm.onTermOut(p => { if (p.kind !== 'resize') counts.received += p.data.length })
+        const write = window.__term.write.bind(window.__term)
+        window.__term.write = (data, callback) => write(data, () => {
+          counts.parsed += data.length
+          counts.writes++
+          callback?.()
+        })
+      })()`).then(() => {
+        sm.writeTo(a.id, 'head -c 3000000 /dev/urandom | base64; echo FLOOD_DONE\r')
+      }).catch((error) => { scenarioFailure = error })
     })
     scenarioTask = (async () => {
       const deadline = Date.now() + 20_000
@@ -88,7 +99,8 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
           return
         }
       }
-      throw new Error('Flood output did not reach the renderer within 20 seconds')
+      const progress = await win.webContents.executeJavaScript('window.__flood')
+      throw new Error(`Flood output did not reach the renderer within 20 seconds: ${JSON.stringify(progress)}`)
     })().catch((error) => {
       scenarioFailure = error instanceof Error ? error : new Error(String(error))
     })
