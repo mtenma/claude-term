@@ -72,6 +72,7 @@ npm run package      # release/ に自分用の .app と DMG を生成
 - [Claude Code の仕様](https://code.claude.com/docs/en/hooks#stop)で、中断時は `Stop` が届きません。hook と画面内容の変化が約60秒途絶えた場合も待機へ戻します。同じ画面の再描画やカーソル制御だけでは、この時間を延長しません。中断の反映には最大約60秒かかり、無出力で長く処理する場合も待機と推定されることがあります
 - statusLine: `~/.claude/claude-term-statusline.sh` を設置し、`settings.json` の `statusLine` が**未設定の場合のみ**設定します(独自の statusLine を使っている場合は一切触れません)。スクリプトは Claude Term のセッション内でのみ動作し、セッション情報 JSON をアプリへ転送してモデル名・コンテキスト残量・コストをカードに表示、claude の画面にも同じ内容のステータス行を出します
 - 書換え前の内容は `~/.claude/settings.json.backup-claude-term` に保存されます。
+- 保存直前に設定を読み直し、確認ダイアログの表示中に行われた編集も保持します。不正な設定は上書きせず、書込みは一時ファイルからの置換で行います。
 
 ### 削除手順
 

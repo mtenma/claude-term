@@ -1,43 +1,9 @@
 import {app, dialog, type BrowserWindow} from 'electron'
-import {randomUUID} from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import {CODEX_HOOK_EVENTS, CODEX_RELAY_COMMAND, withCodexTermHooks} from './codexHooksSettings'
-
-function readJsonObject(filePath: string): {settings: Record<string, unknown>; raw: string | null} {
-  let raw: string
-  try {
-    raw = fs.readFileSync(filePath, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {settings: {}, raw: null}
-    throw new Error(`${filePath} を読み込めません。ファイルのアクセス権を確認してください。`)
-  }
-  let settings: unknown
-  try {
-    settings = JSON.parse(raw)
-  } catch {
-    throw new Error(`${filePath} が正しい JSON ではないため、変更を中止しました。`)
-  }
-  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) {
-    throw new Error(`${filePath} の最上位は JSON オブジェクトである必要があります。`)
-  }
-  return {settings: settings as Record<string, unknown>, raw}
-}
-
-function writeAtomically(filePath: string, contents: string): void {
-  const temporaryPath = `${filePath}.tmp-${randomUUID()}`
-  try {
-    fs.writeFileSync(temporaryPath, contents, {flag: 'wx', mode: 0o600})
-    fs.renameSync(temporaryPath, filePath)
-  } finally {
-    try {
-      fs.unlinkSync(temporaryPath)
-    } catch {
-      // rename 成功後は一時ファイルが存在しない。失敗時も元のエラーを保持する。
-    }
-  }
-}
+import {readJsonObject, writeAtomically} from './hookFiles'
 
 function saveConsent(consentPath: string, consent: 'granted' | 'denied'): void {
   // 同意ダイアログの表示中に保存された Claude 側のキーも保持する。

@@ -129,6 +129,16 @@ check(
   '旧マーカーコマンドが最新版に置き換わる(重複なし)',
 )
 
+for (const invalid of [null, [], 'invalid', {hooks: null}, {hooks: []},
+  {hooks: {Stop: {}}}, {hooks: {Stop: [null]}}, {hooks: {Stop: [{hooks: [null]}]}},
+  {hooks: {Stop: [{hooks: [{type: 'command'}]}]}}]) {
+  const original = JSON.stringify(invalid)
+  let rejected = false
+  try { withClaudeTermHooks(invalid, SL_PATH) } catch { rejected = true }
+  check(rejected && JSON.stringify(invalid) === original,
+    `Claude の不正な構造は入力を保持して拒否する (${original})`)
+}
+
 // 5) Codex の全ライフサイクルに無出力・短いタイムアウトの通知を追加する
 const codexRelay = '[ -n "$CLAUDE_TERM_PORT" ] && /bin/cat'
 const codexEmpty = withCodexTermHooks({}, codexRelay)

@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import {DESIRED, withClaudeTermHooks} from './hooksSettings'
+import {readJsonObject, writeAtomically} from './hookFiles'
 
 const STATUSLINE_SCRIPT = `#!/bin/sh
 # claude-term-statusline: claude-term のセッション内でだけ動作するステータスライン。
@@ -15,17 +16,19 @@ if [ -n "$CLAUDE_TERM_PORT" ] && [ -n "$CLAUDE_TERM_SESSION" ]; then
 fi
 `
 
-function readConsentSettings(consentPath: string): Record<string, unknown> | undefined {
+function scriptIsCurrent(scriptPath: string): boolean {
   try {
-    const settings: unknown = JSON.parse(fs.readFileSync(consentPath, 'utf8'))
-    if (typeof settings === 'object' && settings !== null && !Array.isArray(settings)) {
-      return settings as Record<string, unknown>
-    }
+    return fs.readFileSync(scriptPath, 'utf8') === STATUSLINE_SCRIPT
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
   }
-  console.warn('[hooks] config.json を読み込めないため hooks 連携をスキップします')
-  return undefined
+}
+
+function saveConsent(consentPath: string, consent: 'granted' | 'denied'): void {
+  const {settings} = readJsonObject(consentPath)
+  fs.mkdirSync(path.dirname(consentPath), {recursive: true})
+  writeAtomically(consentPath, `${JSON.stringify({...settings, hooksConsent: consent}, null, 2)}\n`)
 }
 
 /**
@@ -39,56 +42,58 @@ export async function ensureClaudeHooks(win: BrowserWindow): Promise<void> {
   const statuslinePath = path.join(os.homedir(), '.claude', 'claude-term-statusline.sh')
   const consentPath = path.join(app.getPath('userData'), 'config.json')
 
-  const consentSettings = readConsentSettings(consentPath)
-  if (!consentSettings) return
-  const consent = consentSettings.hooksConsent
-  if (consent === 'denied') return
+  try {
+    const {settings: config} = readJsonObject(consentPath)
+    if (config.hooksConsent === 'denied') return
+    const initial = readJsonObject(settingsPath).settings
+    const initialMerged = withClaudeTermHooks(initial, statuslinePath)
+    if (config.hooksConsent === 'granted' &&
+        JSON.stringify(initialMerged) === JSON.stringify(initial) && scriptIsCurrent(statuslinePath)) return
 
-  let raw = ''
-  let settings: Record<string, unknown> = {}
-  if (fs.existsSync(settingsPath)) {
-    raw = fs.readFileSync(settingsPath, 'utf8')
+    if (config.hooksConsent !== 'granted') {
+      const r = await dialog.showMessageBox(win, {
+        type: 'question',
+        buttons: ['追記して有効化', '今はしない'],
+        defaultId: 0,
+        cancelId: 1,
+        message: 'Claude Code の状態検知を有効にしますか?',
+        detail:
+          `~/.claude/settings.json に、claude-term のセッション内でのみ動作するガード付き hooks(${DESIRED.length}件)と、` +
+          'モデル・コンテキスト残量・コストを取得するステータスライン設定(未設定の場合のみ)を追記します。' +
+          '通常のターミナルの claude では環境変数ガードにより何もしません。' +
+          '書換え前のファイルは settings.json.backup-claude-term に保存します。削除手順は README を参照してください。',
+      })
+      if (r.response !== 0) {
+        saveConsent(consentPath, 'denied')
+        return
+      }
+    }
+
+    // ダイアログを開いている間の編集は、設定本体にもバックアップにも残す。
+    readJsonObject(consentPath)
+    const {settings, raw} = readJsonObject(settingsPath)
+    const merged = withClaudeTermHooks(settings, statuslinePath)
+    fs.mkdirSync(path.dirname(settingsPath), {recursive: true})
+    if (!scriptIsCurrent(statuslinePath)) writeAtomically(statuslinePath, STATUSLINE_SCRIPT, 0o755)
+    if (JSON.stringify(merged) !== JSON.stringify(settings)) {
+      if (raw !== null) writeAtomically(`${settingsPath}.backup-claude-term`, raw)
+      writeAtomically(settingsPath, `${JSON.stringify(merged, null, 2)}\n`)
+    }
+    if (config.hooksConsent !== 'granted') saveConsent(consentPath, 'granted')
+    console.log('[hooks] ~/.claude/settings.json に状態検知 hooks と statusLine を設定しました')
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : '設定の保存中にエラーが発生しました。'
+    console.warn('[hooks]', detail)
     try {
-      settings = JSON.parse(raw) as Record<string, unknown>
+      if (!win.isDestroyed()) {
+        await dialog.showMessageBox(win, {
+          type: 'warning', buttons: ['閉じる'],
+          message: 'Claude Code の状態検知を設定できませんでした',
+          detail: `${detail}\n\n設定を確認した後でアプリを再起動すると、もう一度設定できます。`,
+        })
+      }
     } catch {
-      console.warn('[hooks] ~/.claude/settings.json をパースできないため hooks 連携をスキップします')
-      return
+      // ウィンドウが既に閉じられていても、後続の初期化を失敗させない。
     }
   }
-
-  const merged = withClaudeTermHooks(settings, statuslinePath)
-  const scriptUpToDate =
-    fs.existsSync(statuslinePath) && fs.readFileSync(statuslinePath, 'utf8') === STATUSLINE_SCRIPT
-  if (JSON.stringify(merged) === JSON.stringify(settings) && scriptUpToDate) return // 既に最新
-
-  if (consent !== 'granted') {
-    const r = await dialog.showMessageBox(win, {
-      type: 'question',
-      buttons: ['追記して有効化', '今はしない'],
-      defaultId: 0,
-      cancelId: 1,
-      message: 'Claude Code の状態検知を有効にしますか?',
-      detail:
-        `~/.claude/settings.json に、claude-term のセッション内でのみ動作するガード付き hooks(${DESIRED.length}件)と、` +
-        'モデル・コンテキスト残量・コストを取得するステータスライン設定(未設定の場合のみ)を追記します。' +
-        '通常のターミナルの claude では環境変数ガードにより何もしません。' +
-        '書換え前のファイルは settings.json.backup-claude-term に保存します。削除手順は README を参照してください。',
-    })
-    const granted = r.response === 0
-    const currentConsentSettings = readConsentSettings(consentPath)
-    if (!currentConsentSettings) return
-    fs.mkdirSync(path.dirname(consentPath), {recursive: true})
-    fs.writeFileSync(
-      consentPath,
-      JSON.stringify({...currentConsentSettings, hooksConsent: granted ? 'granted' : 'denied'}, null, 2),
-    )
-    if (!granted) return
-  }
-
-  fs.mkdirSync(path.dirname(settingsPath), {recursive: true})
-  fs.writeFileSync(statuslinePath, STATUSLINE_SCRIPT, {mode: 0o755})
-  fs.chmodSync(statuslinePath, 0o755)
-  if (raw) fs.writeFileSync(`${settingsPath}.backup-claude-term`, raw)
-  fs.writeFileSync(settingsPath, `${JSON.stringify(merged, null, 2)}\n`)
-  console.log('[hooks] ~/.claude/settings.json に状態検知 hooks と statusLine を設定しました')
 }

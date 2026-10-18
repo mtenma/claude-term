@@ -18,6 +18,28 @@ interface HookEntry {
   [k: string]: unknown
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+function invalidShape(location: string): never {
+  throw new Error(`Claude settings.json の ${location} の形式が不正なため、変更を中止しました。`)
+}
+
+function validateHooks(value: unknown): asserts value is Record<string, HookEntry[]> {
+  if (!isRecord(value)) invalidShape('hooks')
+  for (const [event, entries] of Object.entries(value)) {
+    if (!Array.isArray(entries)) invalidShape(`hooks.${event}`)
+    for (const entry of entries) {
+      if (!isRecord(entry) || !Array.isArray(entry.hooks) ||
+          (entry.matcher !== undefined && typeof entry.matcher !== 'string')) invalidShape(`hooks.${event}`)
+      for (const handler of entry.hooks) {
+        if (!isRecord(handler) || typeof handler.type !== 'string' || !handler.type ||
+            (handler.type === 'command' && typeof handler.command !== 'string')) invalidShape(`hooks.${event}.hooks`)
+      }
+    }
+  }
+}
+
 export const hookCommand = (state: string, withBody = false): string =>
   `[ -n "$CLAUDE_TERM_PORT" ] && curl -s -m 1 -X POST ${
     withBody ? `--data-binary @- -H 'Content-Type: application/json' ` : ''
@@ -52,11 +74,10 @@ export function withClaudeTermHooks(
   settings: Record<string, unknown>,
   statuslineCommand?: string,
 ): Record<string, unknown> {
+  if (!isRecord(settings)) invalidShape('最上位')
   const out = structuredClone(settings)
-  const hooks = (typeof out.hooks === 'object' && out.hooks !== null ? out.hooks : {}) as Record<
-    string,
-    HookEntry[]
-  >
+  const hooks = out.hooks === undefined ? {} : out.hooks
+  validateHooks(hooks)
   out.hooks = hooks
   for (const event of Object.keys(hooks)) {
     const arr = hooks[event]

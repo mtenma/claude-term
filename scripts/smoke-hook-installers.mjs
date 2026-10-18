@@ -49,9 +49,9 @@ function fixture(customHome = true) {
     dialogs: [], mutations: [], responses: [], fail: null, onQuestion: null,
   }
   const mockFs = {...fs}
-  for (const method of ['writeFileSync', 'renameSync', 'mkdirSync', 'chmodSync', 'unlinkSync']) {
+  for (const method of ['readFileSync', 'writeFileSync', 'renameSync', 'mkdirSync', 'chmodSync', 'unlinkSync']) {
     mockFs[method] = (...args) => {
-      state.mutations.push([method, ...args])
+      if (method !== 'readFileSync') state.mutations.push([method, ...args])
       if (state.fail?.(method, args)) throw Object.assign(new Error('Simulated I/O failure'), {code: 'EACCES'})
       return fs[method](...args)
     }
@@ -234,24 +234,44 @@ try {
   }
   console.log('ok   両 installer とも破損した同意ファイルを上書きせず、何も保存しない')
 
-  for (const invalid of ['{invalid', 'null', '[]', '{"hooks":{"Stop":{}}}']) {
-    const broken = fixture()
-    fs.mkdirSync(broken.codexHome, {recursive: true})
-    fs.writeFileSync(broken.hooksPath, invalid)
-    await broken.ensureCodexHooks(broken.window)
-    assert.equal(fs.readFileSync(broken.hooksPath, 'utf8'), invalid)
-    assert.equal(broken.mutations.length, 0)
-    assert.equal(broken.dialogs.length, 1)
-    assert.equal(broken.dialogs[0].type, 'warning')
+  for (const invalid of ['{invalid', 'null', '[]', '{"hooks":{"Stop":{}}}', '{"hooks":[]}']) {
+    for (const installer of ['codex', 'claude']) {
+      const broken = fixture()
+      const filePath = installer === 'codex' ? broken.hooksPath : broken.claudePath
+      fs.mkdirSync(path.dirname(filePath), {recursive: true})
+      fs.writeFileSync(filePath, invalid)
+      await (installer === 'codex' ? broken.ensureCodexHooks : broken.ensureClaudeHooks)(broken.window)
+      assert.equal(fs.readFileSync(filePath, 'utf8'), invalid)
+      assert.equal(broken.mutations.length, 0)
+      assert.equal(broken.dialogs.length, 1)
+      assert.equal(broken.dialogs[0].type, 'warning')
+    }
   }
-  console.log('ok   壊れた Codex hooks は警告だけ表示し、同意記録と設定の更新を行わない')
+  console.log('ok   壊れた Claude / Codex hooks は例外を外へ出さず、同意記録と設定を変更しない')
 
-  const edited = fixture()
-  writeJson(edited.hooksPath, {})
-  edited.onQuestion = () => writeJson(edited.hooksPath, {description: 'changed while asking'})
-  await edited.ensureCodexHooks(edited.window)
-  assert.equal(readJson(edited.hooksPath).description, 'changed while asking')
-  assert.equal(readJson(`${edited.hooksPath}.backup-claude-term`).description, 'changed while asking')
+  for (const installer of ['codex', 'claude']) {
+    const edited = fixture()
+    const filePath = installer === 'codex' ? edited.hooksPath : edited.claudePath
+    const ensure = installer === 'codex' ? edited.ensureCodexHooks : edited.ensureClaudeHooks
+    writeJson(filePath, {})
+    edited.onQuestion = () => writeJson(filePath, {
+      description: 'changed while asking',
+      statusLine: {type: 'command', command: 'my-statusline'},
+      hooks: {PreToolUse: [{hooks: [{type: 'command', command: 'my-hook'}]}]},
+    })
+    await ensure(edited.window)
+    const updated = readJson(filePath)
+    assert.equal(updated.description, 'changed while asking')
+    assert.equal(updated.statusLine.command, 'my-statusline')
+    assert.equal(updated.hooks.PreToolUse[0].hooks[0].command, 'my-hook')
+    assert.equal(readJson(`${filePath}.backup-claude-term`).description, 'changed while asking')
+    const mutations = edited.mutations.length
+    await ensure(edited.window)
+    assert.equal(edited.mutations.length, mutations, '再適用では書き直さない')
+    if (installer === 'claude') {
+      assert.equal(fs.statSync(path.join(path.dirname(filePath), 'claude-term-statusline.sh')).mode & 0o777, 0o755)
+    }
+  }
 
   for (const installer of ['codex', 'claude']) {
     const brokenDuringDialog = fixture()
@@ -263,26 +283,59 @@ try {
   }
   console.log('ok   同意ダイアログ後も hooks と同意ファイルを再確認する')
 
-  for (const target of ['backup', 'hooks', 'consent']) {
-    const failed = fixture()
-    writeJson(failed.hooksPath, {description: 'before failure'})
-    writeJson(failed.consentPath, {hooksConsent: 'denied'})
-    const before = fs.readFileSync(failed.hooksPath, 'utf8')
-    failed.fail = (method, args) => method === 'renameSync' && args[1] ===
-      (target === 'backup' ? `${failed.hooksPath}.backup-claude-term` : target === 'hooks' ? failed.hooksPath : failed.consentPath)
-    await failed.ensureCodexHooks(failed.window)
-    assert.deepEqual(readJson(failed.consentPath), {hooksConsent: 'denied'})
-    assert.equal(failed.dialogs.at(-1).type, 'warning')
-    if (target !== 'consent') assert.equal(fs.readFileSync(failed.hooksPath, 'utf8'), before)
-    if (target !== 'backup') assert.equal(fs.readFileSync(`${failed.hooksPath}.backup-claude-term`, 'utf8'), before)
-    assert.equal(fs.readdirSync(failed.codexHome).some((name) => name.includes('.tmp-')), false)
-    assert.equal(fs.readdirSync(failed.userData).some((name) => name.includes('.tmp-')), false)
-    failed.fail = null
-    await failed.ensureCodexHooks(failed.window)
-    assert.equal(readJson(failed.consentPath).codexHooksConsent, 'granted')
-    assert.equal(failed.dialogs.filter((item) => item.type === 'question').length, 2)
+  for (const installer of ['codex', 'claude']) {
+    const broken = fixture()
+    const filePath = installer === 'codex' ? broken.hooksPath : broken.claudePath
+    writeJson(filePath, {})
+    broken.onQuestion = () => fs.writeFileSync(filePath, '{invalid')
+    await (installer === 'codex' ? broken.ensureCodexHooks : broken.ensureClaudeHooks)(broken.window)
+    assert.equal(fs.readFileSync(filePath, 'utf8'), '{invalid')
+    assert.equal(broken.mutations.length, 0, 'ダイアログ中に壊れた設定を上書きしない')
   }
-  console.log('ok   バックアップ・設定・同意の保存失敗でも呼び出し元を止めず、次回再試行できる')
+
+  for (const installer of ['codex', 'claude']) {
+    for (const target of ['read', 'backup', 'hooks', 'consent']) {
+      const failed = fixture()
+      const filePath = installer === 'codex' ? failed.hooksPath : failed.claudePath
+      const ownKey = installer === 'codex' ? 'codexHooksConsent' : 'hooksConsent'
+      const otherKey = installer === 'codex' ? 'hooksConsent' : 'codexHooksConsent'
+      const ensure = installer === 'codex' ? failed.ensureCodexHooks : failed.ensureClaudeHooks
+      writeJson(filePath, {description: 'before failure'})
+      writeJson(failed.consentPath, {[otherKey]: 'denied'})
+      const before = fs.readFileSync(filePath, 'utf8')
+      failed.fail = (method, args) => target === 'read'
+        ? method === 'readFileSync' && args[0] === filePath
+        : method === 'renameSync' && args[1] ===
+          (target === 'backup' ? `${filePath}.backup-claude-term` : target === 'hooks' ? filePath : failed.consentPath)
+      await ensure(failed.window)
+      assert.deepEqual(readJson(failed.consentPath), {[otherKey]: 'denied'})
+      assert.equal(failed.dialogs.at(-1).type, 'warning')
+      if (target !== 'consent') assert.equal(fs.readFileSync(filePath, 'utf8'), before)
+      if (target === 'hooks' || target === 'consent') assert.equal(fs.readFileSync(`${filePath}.backup-claude-term`, 'utf8'), before)
+      assert.equal(fs.readdirSync(path.dirname(filePath)).some((name) => name.includes('.tmp-')), false)
+      assert.equal(fs.readdirSync(failed.userData).some((name) => name.includes('.tmp-')), false)
+      failed.fail = null
+      await ensure(failed.window)
+      assert.equal(readJson(failed.consentPath)[ownKey], 'granted')
+      assert.equal(failed.dialogs.filter((item) => item.type === 'question').length, target === 'read' ? 1 : 2)
+    }
+  }
+  console.log('ok   Claude / Codex とも読込・バックアップ・設定・同意の失敗から安全に再試行できる')
+
+  for (const installer of ['codex', 'claude']) {
+    const linked = fixture()
+    const filePath = installer === 'codex' ? linked.hooksPath : linked.claudePath
+    const targetPath = path.join(linked.directory, 'dotfiles-settings.json')
+    writeJson(targetPath, {description: 'linked settings'})
+    fs.mkdirSync(path.dirname(filePath), {recursive: true})
+    fs.symlinkSync(targetPath, filePath)
+    await (installer === 'codex' ? linked.ensureCodexHooks : linked.ensureClaudeHooks)(linked.window)
+    assert.ok(fs.lstatSync(filePath).isSymbolicLink(), '設定ファイルのリンクを保持する')
+    assert.equal(readJson(targetPath).description, 'linked settings')
+    assert.ok(readJson(targetPath).hooks.Stop)
+    assert.equal(readJson(`${filePath}.backup-claude-term`).description, 'linked settings')
+  }
+  console.log('ok   設定ファイルがシンボリックリンクでも参照先を更新し、リンクと元の設定を保持')
 
   const upgrade = fixture()
   writeJson(upgrade.consentPath, {codexHooksConsent: 'granted', hooksConsent: 'denied'})
