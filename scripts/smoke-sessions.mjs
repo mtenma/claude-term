@@ -4,6 +4,7 @@
 // センチネル handoff の欠落・重複・順序バグはここで機械的に検出できる。
 import * as esbuild from 'esbuild'
 import {createRequire} from 'node:module'
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 import {fileURLToPath} from 'node:url'
 
@@ -156,14 +157,37 @@ check(
   `終了カードは Enter で閉じ、隣のセッションへ移る (active=${sm.activeId})`,
 )
 
-// +new はアクティブセッションの現在ディレクトリで開くこと
-sm.writeTo(a.id, 'cd /private/tmp\r')
-await sleep(3000) // lsof ポーリング(2秒周期)による cwd 追跡を待つ
+// Finder 起動時など、親アプリが C locale でも日本語の cwd を追跡できること。
+const cwdRoot = fs.mkdtempSync('/private/tmp/claude-term-cwd-smoke-')
+const japaneseDir = path.join(cwdRoot, '宮古島市総合博物館 資料')
+fs.mkdirSync(japaneseDir)
+process.once('exit', () => fs.rmSync(cwdRoot, {recursive: true, force: true}))
+const originalLocale = process.env.LC_ALL
+try {
+  process.env.LC_ALL = 'C'
+  sm.writeTo(a.id, `cd '${japaneseDir}'\r`)
+  await sleep(3000) // lsof ポーリング(2秒周期)による cwd 追跡を待つ
+} finally {
+  if (originalLocale === undefined) delete process.env.LC_ALL
+  else process.env.LC_ALL = originalLocale
+}
+const aInfo = sm.currentUpdate().sessions.find((x) => x.id === a.id)
+check(
+  aInfo?.title === path.basename(japaneseDir) && aInfo.cwd.endsWith(japaneseDir),
+  `C locale の親アプリでも日本語のカード名とパスを保持する (title=${aInfo?.title})`,
+)
+// +new が日本語ディレクトリを実在しないと判断してホームへ戻らないこと。
 const c = sm.create()
 const cInfo = sm.currentUpdate().sessions.find((x) => x.id === c.id)
 check(
-  (cInfo?.cwd ?? '').includes('/private/tmp'),
-  `+new はアクティブセッションのディレクトリで開く (cwd=${cInfo?.cwd})`,
+  cInfo?.title === path.basename(japaneseDir) && cInfo.cwd.endsWith(japaneseDir),
+  `+new は日本語のアクティブディレクトリを引き継ぐ (cwd=${cInfo?.cwd})`,
+)
+sm.writeTo(c.id, "printf 'CWD_INHERITED<%s>\\n' \"$PWD\"\r")
+await sleep(1500)
+check(
+  (sm.serializeSession(c.id) ?? '').includes(`CWD_INHERITED<${japaneseDir}>`),
+  '+new のシェルが実際に日本語ディレクトリで起動する',
 )
 
 // ドラッグ&ドロップの並び替えが表示順(currentUpdate)に反映されること

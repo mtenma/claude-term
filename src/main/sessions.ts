@@ -777,7 +777,8 @@ export class SessionManager {
     execFile(
       '/usr/sbin/lsof',
       ['-a', '-p', String(s.pty.pid), '-d', 'cwd', '-Fn'],
-      {timeout: 3000},
+      // Finder/Dock 起動で locale が未設定でも、日本語パスを \\xNN に変換させない。
+      {timeout: 3000, env: {...process.env, LC_ALL: 'en_US.UTF-8'}},
       (err, stdout) => {
         if (err || s.exited) return
         const line = stdout.split('\n').find((l) => l.startsWith('n'))
