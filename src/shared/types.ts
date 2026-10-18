@@ -64,6 +64,60 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   accent: '#d97757',
 }
 
+// ---- コスト画面 ----
+
+export type UsagePeriod = '7d' | '30d' | 'thisMonth' | 'lastMonth'
+export const USAGE_PERIODS: readonly UsagePeriod[] = ['7d', '30d', 'thisMonth', 'lastMonth']
+
+export interface UsageAmount {
+  /** API 換算額(USD)。料金表にあるモデルの分だけを含む */
+  cost: number
+  /** 入力 + キャッシュ書込 + 出力。キャッシュ読込は大半を占めるため含めない */
+  tokens: number
+  cacheRead: number
+  /** 料金表にないモデルのトークン(tokens と同じ数え方) */
+  unknownTokens: number
+}
+
+export interface UsageProject {
+  /** プロジェクトの根のパス。一時フォルダは 'temp' */
+  id: string
+  name: string
+  /** ~ 略記のパス(一時フォルダは空) */
+  path: string
+  /** unknown は作業フォルダの記録がないセッション */
+  kind: 'git' | 'dir' | 'temp' | 'unknown'
+  claude: UsageAmount
+  codex: UsageAmount
+  lastUsedAt: number
+}
+
+export interface UsageReport {
+  period: UsagePeriod
+  /** 現地日付 YYYY-MM-DD(古い順) */
+  days: string[]
+  projects: UsageProject[]
+  /** daily[日の添字][プロジェクトの添字] */
+  daily: UsageAmount[][]
+  today: UsageAmount
+  unknownModels: {agent: AgentKind; model: string; tokens: number}[]
+  /** 集計データ内で最も古い記録の時刻(エージェント別) */
+  earliest: Record<AgentKind, number | null>
+  lastScanAt: number | null
+  generatedAt: number
+  pricingCheckedAt: string
+  /** 集計データの保存場所(~ 略記) */
+  storagePath: string
+}
+
+export type UsageErrorCode = 'db_newer' | 'db_failed' | 'service_exited' | 'timeout' | 'internal'
+
+export type UsageEvent =
+  | {kind: 'progress'; doneBytes: number; totalBytes: number; firstImport: boolean}
+  | {kind: 'scanned'; at: number; parseErrors: number; longLines: number; unreadable: number}
+  | {kind: 'error'; code: UsageErrorCode}
+  | {kind: 'deleted'}
+
 // IPC チャンネル名。main / preload / renderer で共有する契約
 export const CH = {
   sessionCreate: 'session:create',
@@ -83,4 +137,8 @@ export const CH = {
   termIn: 'term:in',
   termResize: 'term:resize',
   termAck: 'term:ack',
+  usageReport: 'usage:report',
+  usageRefresh: 'usage:refresh',
+  usageDelete: 'usage:delete',
+  usageEvent: 'usage:event',
 } as const

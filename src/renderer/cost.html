@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  />
+  <title>コスト — Claude Term</title>
+  <link rel="stylesheet" href="./cost.css" />
+</head>
+<body data-state="loading">
+  <header class="toolbar">
+    <fieldset class="segmented" id="period">
+      <legend class="sr-only">期間</legend>
+      <label><input type="radio" name="period" value="7d" checked /><span>7日</span></label>
+      <label><input type="radio" name="period" value="30d" /><span>30日</span></label>
+      <label><input type="radio" name="period" value="thisMonth" /><span>今月</span></label>
+      <label><input type="radio" name="period" value="lastMonth" /><span>先月</span></label>
+    </fieldset>
+    <span class="range" id="range"></span>
+    <span class="toolbar-spacer"></span>
+    <fieldset class="segmented" id="metric">
+      <legend class="sr-only">表示する数字</legend>
+      <label><input type="radio" name="metric" value="cost" checked /><span>API換算額</span></label>
+      <label><input type="radio" name="metric" value="tokens" /><span>トークン</span></label>
+    </fieldset>
+    <label class="check" id="cache-read-option" hidden>
+      <input type="checkbox" id="with-cache-read" /><span>キャッシュ読込を含める</span>
+    </label>
+  </header>
+
+  <main class="content">
+    <section class="notice" id="notice" hidden>
+      <p>
+        集計データは <code class="storage-path"></code> に保存します。
+        保存するのはトークン数・モデル・時刻・作業フォルダだけで、会話本文は保存せず、外部にも送りません。
+        Claude Code と Codex の元の記録が消えても、集計は残ります(画面下の「集計データを削除」で消せます)。
+      </p>
+      <button type="button" id="notice-close">閉じる</button>
+    </section>
+
+    <section class="summary" aria-label="合計">
+      <div class="stat">
+        <div class="stat-label" id="total-label">期間合計</div>
+        <div class="stat-value" id="total-value">—</div>
+        <div class="stat-sub" id="total-sub"></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">今日</div>
+        <div class="stat-value" id="today-value">—</div>
+        <div class="stat-sub" id="today-sub"></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">料金不明</div>
+        <div class="stat-value" id="unknown-value">—</div>
+        <div class="stat-sub" id="unknown-sub"></div>
+      </div>
+    </section>
+    <p class="caveat" id="caveat"></p>
+
+    <div class="filter" id="filter" hidden>
+      <span>絞り込み: <strong id="filter-name"></strong></span>
+      <button type="button" id="filter-clear" aria-label="絞り込みを解除">×</button>
+    </div>
+
+    <section class="card" aria-labelledby="daily-title">
+      <div class="card-head">
+        <h2 id="daily-title">日別</h2>
+        <ul class="legend" id="legend"></ul>
+        <button type="button" class="link-button" id="table-toggle" aria-pressed="false">日別の表で見る</button>
+      </div>
+      <div class="chart" id="chart" tabindex="0" role="img"></div>
+      <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+      <div class="daily-table" id="daily-table" hidden></div>
+      <p class="empty" id="empty" hidden></p>
+    </section>
+
+    <section class="card table-scroll">
+      <table class="projects" id="projects">
+        <caption>プロジェクト別(セッションを始めたフォルダでまとめています)</caption>
+        <thead>
+          <tr>
+            <th scope="col" class="name-col">プロジェクト</th>
+            <th scope="col" class="num" id="col-main">API換算額</th>
+            <th scope="col" class="num" id="col-claude">Claude(額)</th>
+            <th scope="col" class="num" id="col-codex">Codex(額)</th>
+            <th scope="col" class="num" id="col-other">トークン</th>
+            <th scope="col" class="num">最終利用</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <details class="help">
+      <summary>数字の見方</summary>
+      <ul id="help-list"></ul>
+    </details>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status" role="status"></span>
+    <span id="progress" class="progress"></span>
+    <button type="button" id="refresh">更新</button>
+    <span class="toolbar-spacer"></span>
+    <span id="earliest" class="earliest"></span>
+    <button type="button" id="delete-data" class="quiet">集計データを削除…</button>
+  </footer>
+  <script src="./cost.js"></script>
+</body>
+</html>

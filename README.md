@@ -119,6 +119,27 @@ Electron と通知スクリプトのパスは、起動元の PTY に `CLAUDE_TER
 
 削除する場合は `hooks.json` から `claude-term-codex-hook` を含む command エントリを取り除きます。アプリ側の同意をやり直す場合は `~/Library/Application Support/Claude Term/config.json` の `codexHooksConsent` だけを削除してください。
 
+## コスト画面
+
+メニューの「ウィンドウ > コスト」で開きます。Claude Code(`~/.claude/projects`)と Codex(`~/.codex/sessions`・`archived_sessions`)の記録から、**プロジェクト別**と**日別**のトークン数と API 換算額を表示します。
+
+- 金額は、記録のトークン数に現在の API 単価を掛けた目安です。**定額プランの請求額ではありません**。単価は `src/main/usagePricing.ts` に出典と確認日を付けて持ち、過去の分も現在の単価で計算します。料金表にないモデルは「料金不明」としてトークンだけ数えます
+- プロジェクトは、セッションを始めたフォルダの git リポジトリでまとめます(ワークツリーは元のリポジトリへ、一時フォルダは「一時フォルダ」へ)
+- トークンは入力・キャッシュ書込・出力の合計です。キャッシュ読込は量が多いため既定では含めません
+- 同じ応答が複数行・複数ファイルに書かれる記録(Claude の content ブロックごとの行、Codex の fork したセッションへの写し)は 1 回として数えます。古い Codex の記録には文脈圧縮の呼出しが残っていないため、その分は含まれません
+
+### 集計データの保存と削除
+
+- 保存先は `~/Library/Application Support/Claude Term/usage.sqlite` です(開発実行は `usage-dev.sqlite`)。権限は 0600 です
+- 保存するのはトークン数・モデル・時刻・セッションを始めたフォルダだけで、**会話本文・プロンプト・ツールの入出力は保存しません**。外部にも送りません
+- 取り込みはコスト画面を開いている間だけ、別プロセス(utilityProcess)で行います。`~/.claude` と `~/.codex` には書き込みません
+- Claude Code が古い記録を消しても(既定で 30 日)、**集計は残ります**。Time Machine のバックアップにも含まれます
+- 消す場合は、コスト画面の「集計データを削除」を使うか、アプリを終了してから次を実行します。アプリをゴミ箱へ入れただけでは消えません
+
+```sh
+rm ~/Library/Application\ Support/Claude\ Term/usage.sqlite*
+```
+
 ## tmux / ssh でのコピー(OSC 52)
 
 ssh 先や tmux 内でコピーした内容は、クリップボード転送シーケンス(OSC 52)経由でローカルの macOS クリップボードへ届きます。tmux を使う場合は接続先の `~/.tmux.conf` に以下を追加してください(tmux 3.2+):
@@ -139,7 +160,7 @@ set -as terminal-features ',xterm-256color:clipboard'
 ```sh
 npm run check   # 型検査
 npm run smoke   # SessionManager のスモークテスト(GUI 不要・attach 切替の欠落/重複ゼロを機械検証)
-node scripts/smoke-mac-package.mjs # パッケージ作成後の署名・UUID・LAN 用途説明
+node scripts/smoke-mac-package.mjs # パッケージ作成後の署名・UUID・LAN 用途説明・asar 内でのコスト画面の集計
 node scripts/smoke-hooks.mjs           # Claude / Codex hooks の設定マージ
 node scripts/smoke-hook-installers.mjs # 設定保存・同意・失敗時の保全(一時ディレクトリのみ)
 node scripts/smoke-codex.mjs           # Codex relay・状態・通知・セッション分離
@@ -147,11 +168,13 @@ node scripts/smoke-resize.mjs          # 日本語の欠落・追記・サイズ
 node scripts/smoke-terminal-resize.mjs # 全角境界・カーソル・保存位置・代替画面
 node scripts/smoke-shell-integration.mjs # zsh 起動ファイルの消失・破損・書込失敗からの復旧
 node scripts/smoke-session-flow.mjs      # 入力・ACK の宛先、裏側の大量出力、終了時のタイマー解除
+node scripts/smoke-usage.mjs             # コスト画面の取込み・重複除去・料金計算・差分取込み・DB の権限と退避
 CLAUDE_TERM_SCREENSHOT=/tmp/s.png CLAUDE_TERM_DEMO=states npm run shot  # 自動スクリーンショット
 CLAUDE_TERM_SCREENSHOT=/tmp/codex.png CLAUDE_TERM_DEMO=codex npm start # Codex表示・入力・切替・リサイズ
 CLAUDE_TERM_SCREENSHOT=/tmp/wrap.png CLAUDE_TERM_DEMO=resize-wrap npm start # DOM/WebGL・日本語の出力中リサイズ・シェル入力
 CLAUDE_TERM_SCREENSHOT=/tmp/edge.png CLAUDE_TERM_DEMO=right-edge npm start # 句読点・太字等の右端欠け・描画位置・ズーム・切替
 CLAUDE_TERM_SCREENSHOT=/tmp/nav.png CLAUDE_TERM_DEMO=nav-guard npm start # ページ移動・新規ウィンドウの抑止
+TZ=Asia/Tokyo CLAUDE_TERM_SCREENSHOT=/tmp/cost.png CLAUDE_TERM_DEMO=cost npm start # コスト画面(偽データ・別 DB)。cost-light / cost-empty も
 ```
 
 ### アーキテクチャ概要
@@ -165,6 +188,7 @@ CLAUDE_TERM_SCREENSHOT=/tmp/nav.png CLAUDE_TERM_DEMO=nav-guard npm start # ペ�
 - 全 PTY をメイン表示の cols/rows に合わせ、Codex などの出力途中の行は全角文字と論理的なカーソル位置を保って折り返す。xterm 6 の内部 API への依存は `src/shared/terminalResize.ts` に限定し、更新時は回帰テストで確認
 - macOS の前面プロセスが zsh / bash などのシェルなら、入力行の再描画をシェルに任せる。画面側にも同じ選択を寸法変更とともに通知
 - すべての画面で、ページ側から始まる移動(ファイルのドロップなど)と新規ウィンドウを止め、画面からの権限要求も拒否する。OSC 8 などの http(s) リンクは既定のブラウザで開く
+- コスト画面の集計は utilityProcess で動かし、SQLite(Electron 内蔵の `node:sqlite`)や記録の読込みの異常で PTY を抱える main プロセスが落ちないようにする。記録はファイルごとに inode・先頭のハッシュ・読んだ位置を覚えて差分だけ読み、行・位置・途中状態を同じトランザクションで書く
 
 ## 既知の制限
 

@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import {CH} from '../shared/types'
 import {whenAllPtysExited, type SessionManager} from './sessions'
 import {checkResizeWrapping} from './devshotResize'
+import {checkCostWindow} from './devshotCost'
 
 /**
  * 開発検証用の自動スクリーンショット。
@@ -22,6 +23,8 @@ import {checkResizeWrapping} from './devshotResize'
  *   resize-wrap … 日本語の未確定行・続きの出力・長いシェル入力を幅変更とともに検証
  *   right-edge  … 日本語の句読点・各書体の描画幅をリサイズとズームで検証
  *   nav-guard   … 画面側からのページ移動と window.open が抑止されることを検証
+ *   cost / cost-light / cost-empty … 偽の記録でコスト画面を開き、表示・操作・外観の追随を検証して撮影
+ *   cost-live   … 実際の記録でコスト画面を撮影(CLAUDE_TERM_USAGE_DB で別の DB を指定する)
  * CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを指定できる。
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
@@ -32,6 +35,8 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
   const captureDelay = Number(process.env.CLAUDE_TERM_SHOT_DELAY ?? 7000)
   let scenarioFailure: Error | null = null
   let scenarioTask: Promise<void> | null = null
+  // 撮影する窓(コスト画面のシナリオでは別の窓を撮る)
+  let shotWindow: BrowserWindow = win
 
   // CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを変えられる
   // (右端欠けはホスト幅の端数に依存するため、報告と同じ幅で再現するのに使う)
@@ -58,6 +63,12 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
     })
   } else if (scenario === 'resize-wrap') {
     scenarioTask = checkResizeWrapping(win, sm).catch((error) => {
+      scenarioFailure = error instanceof Error ? error : new Error(String(error))
+    })
+  } else if (scenario === 'cost' || scenario === 'cost-light' || scenario === 'cost-empty' || scenario === 'cost-live') {
+    scenarioTask = checkCostWindow(scenario, (costWindow) => {
+      shotWindow = costWindow
+    }).catch((error) => {
       scenarioFailure = error instanceof Error ? error : new Error(String(error))
     })
   } else if (scenario === 'nav-guard') {
@@ -494,9 +505,9 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
       try {
         await scenarioTask
         // 失敗時にも、その時点の欠落を画像に残す。
-        if (scenarioFailure) fs.writeFileSync(out, (await win.webContents.capturePage()).toPNG())
+        if (scenarioFailure) fs.writeFileSync(out, (await shotWindow.webContents.capturePage()).toPNG())
         if (scenarioFailure) throw scenarioFailure
-        const img = await win.webContents.capturePage()
+        const img = await shotWindow.webContents.capturePage()
         const buf = img.toPNG()
         if (buf.length < 10_000) throw new Error(`screenshot too small (${buf.length} bytes)`)
         fs.writeFileSync(out, buf)

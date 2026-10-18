@@ -49,6 +49,15 @@ await Promise.all([
     format: 'cjs',
     target: 'node22',
   }),
+  // コスト画面の集計(utilityProcess で動かす。node:sqlite は Electron 内蔵のものを使う)
+  esbuild.build({
+    ...common,
+    entryPoints: ['src/main/usageService.ts'],
+    outfile: 'dist/main/usageService.js',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+  }),
   esbuild.build({
     ...common,
     entryPoints: ['src/preload/preload.ts'],
@@ -57,6 +66,23 @@ await Promise.all([
     format: 'cjs',
     target: 'node22',
     external: ['electron'],
+  }),
+  esbuild.build({
+    ...common,
+    entryPoints: ['src/preload/usagePreload.ts'],
+    outfile: 'dist/preload/usagePreload.js',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    external: ['electron'],
+  }),
+  esbuild.build({
+    ...common,
+    entryPoints: ['src/renderer/cost.ts'],
+    outfile: 'dist/renderer/cost.js',
+    platform: 'browser',
+    format: 'iife',
+    target: 'es2022',
   }),
   esbuild.build({
     ...common,
@@ -70,3 +96,4 @@ await Promise.all([
 ])
 
 cpSync('src/renderer/index.html', 'dist/renderer/index.html')
+cpSync('src/renderer/cost.html', 'dist/renderer/cost.html')

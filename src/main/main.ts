@@ -8,6 +8,7 @@ import {ensureClaudeHooks} from './claudeHooks'
 import {ensureCodexHooks} from './codexHooks'
 import {maybeRunDevshot} from './devshot'
 import {restrictWebContents} from './windowSecurity'
+import {disposeUsage, isCostWindow, openCostWindow, registerUsageIpc, sendAppearanceToCostWindow} from './usageWindow'
 
 // 1ウィンドウ = 1 SessionManager。webContents.id をキーに対応関係を持つ
 interface WindowContext {
@@ -85,7 +86,16 @@ function registerIpc(): void {
     const a = setAppearance(raw)
     // 送信元も含む全ウィンドウへ正規化済みの値を配って同期する
     for (const ctx of contexts.values()) send(ctx, CH.settingsUpdate, a)
+    sendAppearanceToCostWindow(a)
   })
+}
+
+/** コスト画面から ⌘, を押したときは、ターミナル窓の外観設定を開く */
+async function openSettingsFrom(win: BrowserWindow): Promise<void> {
+  let target = isCostWindow(win) ? [...contexts.values()][0]?.win : win
+  if (!target) target = (await createWindow()).win
+  target.focus()
+  target.webContents.send(CH.editOpenSettings)
 }
 
 function confirmClose(ctx: WindowContext): void {
@@ -195,7 +205,7 @@ function setupMenu(): void {
           label: '設定…',
           accelerator: 'CmdOrCtrl+,',
           click: (_item, win) => {
-            if (win instanceof BrowserWindow) win.webContents.send(CH.editOpenSettings)
+            if (win instanceof BrowserWindow) void openSettingsFrom(win)
           },
         },
         {type: 'separator'},
@@ -234,7 +244,10 @@ function setupMenu(): void {
           label: 'すべてを選択',
           accelerator: 'CmdOrCtrl+A',
           click: (_item, win) => {
-            if (win instanceof BrowserWindow) win.webContents.send(CH.editSelectAll)
+            if (!(win instanceof BrowserWindow)) return
+            // コスト画面は通常のページなので、ページ内の文字を選択する
+            if (isCostWindow(win)) win.webContents.selectAll()
+            else win.webContents.send(CH.editSelectAll)
           },
         },
         {type: 'separator'},
@@ -242,7 +255,7 @@ function setupMenu(): void {
           label: '検索',
           accelerator: 'CmdOrCtrl+F',
           click: (_item, win) => {
-            if (win instanceof BrowserWindow) win.webContents.send(CH.editFind)
+            if (win instanceof BrowserWindow && !isCostWindow(win)) win.webContents.send(CH.editFind)
           },
         },
       ],
@@ -256,6 +269,8 @@ function setupMenu(): void {
       submenu: [
         {role: 'minimize', label: 'しまう'},
         {role: 'zoom', label: '拡大/縮小'},
+        {type: 'separator'},
+        {label: 'コスト', click: () => openCostWindow()},
         {type: 'separator'},
         {role: 'front', label: 'すべてを手前に移動'},
       ],
@@ -295,6 +310,7 @@ async function main(): Promise<void> {
     },
   })
   registerIpc()
+  registerUsageIpc()
   setupMenu()
 
   const first = await createWindow()
@@ -324,7 +340,7 @@ app.on('will-quit', (e) => {
   if (quitReady) return
   e.preventDefault()
   for (const ctx of contexts.values()) ctx.sm.disposeAll()
-  void whenAllPtysExited(1500).then(() => {
+  void Promise.all([whenAllPtysExited(1500), disposeUsage()]).then(() => {
     // 飛行中の onData 等のコールバックが掃けるまで一拍置く
     setTimeout(() => {
       quitReady = true

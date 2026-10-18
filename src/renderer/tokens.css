@@ -1,0 +1,25 @@
+/* ターミナル画面とコスト画面で共有する色の定義 */
+:root {
+  /* --bg / --text / --accent / --bg-pct は外観設定から JS で上書きされる。
+     他の色は color-mix で派生させ、背景色1つで全体が追従するようにする */
+  --bg: #0f0f11;
+  --text: #e4e4e7;
+  --accent: #d97757;
+  --bg-pct: 100%; /* 背景の不透明度 */
+  /* 面の段差は背景に混ぜる色で作る。明るい背景ではコスト画面が black に切り替える */
+  --mix: white;
+  --panel: color-mix(in srgb, var(--bg) 97%, var(--mix));
+  --panel-2: color-mix(in srgb, var(--bg) 94%, var(--mix));
+  --border: color-mix(in srgb, var(--bg) 91%, var(--mix));
+  --raise-1: color-mix(in srgb, var(--bg) 92%, var(--mix)); /* カード hover */
+  --raise-2: color-mix(in srgb, var(--bg) 89%, var(--mix)); /* 選択・ピル・スクロールバー */
+  --raise-3: color-mix(in srgb, var(--bg) 86%, var(--mix)); /* ボタン hover */
+  --text-dim: color-mix(in srgb, var(--text) 70%, var(--bg));
+  --text-faint: color-mix(in srgb, var(--text) 42%, var(--bg));
+  --green: #22c55e;
+  --orange: #f59e0b;
+  --gray: #3f3f46;
+  /* 透過を反映した背景(不透明度 100% なら従来と同一) */
+  --bg-a: color-mix(in srgb, var(--bg) var(--bg-pct), transparent);
+  --panel-a: color-mix(in srgb, var(--panel) var(--bg-pct), transparent);
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {execFileSync, spawnSync} from 'node:child_process'
-import {readdirSync} from 'node:fs'
+import {mkdirSync, mkdtempSync, readdirSync, rmSync} from 'node:fs'
 import path from 'node:path'
 
 const app = path.resolve(process.argv[2] ?? 'release/mac-arm64/Claude Term.app')
@@ -51,4 +51,19 @@ const runtime = spawnSync(path.join(app, 'Contents/MacOS', mainInfo.CFBundleExec
 `], {encoding: 'utf8', env: {...process.env, ELECTRON_RUN_AS_NODE: '1'}, timeout: 10000})
 assert.equal(runtime.status, 0, `Packaged runtime failed: ${runtime.error ?? runtime.stderr}`)
 assert.equal(runtime.stdout, 'CLAUDE_TERM_PACKAGED_PTY_OK')
-console.log(`macOS package OK: signed app and ${bundles.length - 1} helpers, distinct UUIDs, LAN usage descriptions, packaged PTY`)
+
+// コスト画面: asar 内の utilityProcess と node:sqlite で、偽の記録の取込みと表示の検証が通ること。
+// 偽の記録・DB・撮影画像はプロジェクト内の dist-test に作り、実ユーザーの集計データには触れない
+mkdirSync('dist-test', {recursive: true})
+const costDir = mkdtempSync(path.resolve('dist-test', 'package-cost-'))
+const cost = spawnSync(path.join(app, 'Contents/MacOS', mainInfo.CFBundleExecutable), [], {
+  encoding: 'utf8',
+  timeout: 60000,
+  env: {
+    ...process.env, TZ: 'Asia/Tokyo', CLAUDE_TERM_DEMO: 'cost', CLAUDE_TERM_SHOT_DELAY: '10000',
+    CLAUDE_TERM_SCREENSHOT: path.join(costDir, 'cost.png'), CLAUDE_TERM_USAGE_FIXTURE_DIR: costDir,
+  },
+})
+rmSync(costDir, {recursive: true, force: true})
+assert.equal(cost.status, 0, `Packaged cost window failed: ${cost.error ?? cost.stderr}`)
+console.log(`macOS package OK: signed app and ${bundles.length - 1} helpers, distinct UUIDs, LAN usage descriptions, packaged PTY, cost window`)
