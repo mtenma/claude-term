@@ -1,4 +1,4 @@
-import {app, BrowserWindow} from 'electron'
+import {app, BrowserWindow, shell} from 'electron'
 import {checkRightEdge} from './devshotEdge'
 import * as fs from 'node:fs'
 import {CH} from '../shared/types'
@@ -22,7 +22,7 @@ import {checkCostWindow} from './devshotCost'
  *   resize … ウィンドウリサイズ後の列数再計算とリフローの検証
  *   resize-wrap … 日本語の未確定行・続きの出力・長いシェル入力を幅変更とともに検証
  *   right-edge  … 日本語の句読点・各書体の描画幅をリサイズとズームで検証
- *   nav-guard   … 画面側からのページ移動と window.open が抑止されることを検証
+ *   nav-guard   … 画面側からのページ移動と window.open の抑止、OSC 8 リンクの ⌘ クリックを検証
  *   cost / cost-light / cost-empty … 偽の記録でコスト画面を開き、表示・操作・外観の追随を検証して撮影
  *   cost-live   … 実際の記録でコスト画面を撮影(CLAUDE_TERM_USAGE_DB で別の DB を指定する)
  * CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを指定できる。
@@ -75,13 +75,45 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
     // ドロップや OSC 8 リンクと同じく、ページ側から始まる移動と新規ウィンドウを試す
     const url = win.webContents.getURL()
     const windows = BrowserWindow.getAllWindows().length
-    at(1500, () => {
-      void win.webContents.executeJavaScript(`(() => {
-        window.open('file:///System/Library/')
-        location.href = 'file:///System/Library/'
-      })()`).catch((error) => { scenarioFailure = error })
+    // OSC 8 リンクの ⌘ クリックが既定のブラウザへ渡ること。実際には開かず、渡された URL を記録する
+    const opened: string[] = []
+    ;(shell as {openExternal: (target: string) => Promise<void>}).openExternal = async (target) => {
+      opened.push(target)
+    }
+    const link = 'https://example.com/claude-term-osc8'
+    const a = sm.create()
+    sm.attach(a.id)
+    at(1200, () => {
+      sm.writeTo(a.id, `clear; printf '\\e]8;;${link}\\e\\\\OSC8LINK\\e]8;;\\e\\\\\\n'\r`)
     })
-    at(3500, () => {
+    at(2500, () => {
+      void (async () => {
+        const point = await win.webContents.executeJavaScript(`(() => {
+          const t = window.__term
+          const b = t.buffer.active
+          const cell = t._core._renderService.dimensions.css.cell
+          const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
+          for (let y = 0; y < t.rows; y++) {
+            if (b.getLine(b.viewportY + y)?.translateToString(true).startsWith('OSC8LINK')) {
+              return {x: Math.round(rect.left + cell.width * 3), y: Math.round(rect.top + cell.height * (y + 0.5))}
+            }
+          }
+          return null
+        })()`) as {x: number; y: number} | null
+        if (!point) throw new Error('OSC 8 link was not printed')
+        win.webContents.sendInputEvent({type: 'mouseMove', x: point.x, y: point.y, modifiers: ['meta']})
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        win.webContents.sendInputEvent({type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1, modifiers: ['meta']})
+        win.webContents.sendInputEvent({type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1, modifiers: ['meta']})
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        if (!opened.includes(link)) throw new Error(`OSC 8 link was not opened: ${JSON.stringify(opened)}`)
+        await win.webContents.executeJavaScript(`(() => {
+          window.open('file:///System/Library/')
+          location.href = 'file:///System/Library/'
+        })()`)
+      })().catch((error) => { scenarioFailure = error instanceof Error ? error : new Error(String(error)) })
+    })
+    at(4500, () => {
       if (win.webContents.getURL() !== url) {
         scenarioFailure = new Error(`page navigated: ${win.webContents.getURL()}`)
       } else if (BrowserWindow.getAllWindows().length !== windows) {

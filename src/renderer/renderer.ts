@@ -60,6 +60,13 @@ const term = new Terminal({
   allowTransparency: true,
   // tmux の mouse on 等でマウスがアプリに奪われていても ⌥ドラッグでローカル選択できるようにする
   macOptionClickForcesSelection: true,
+  // OSC 8 のリンク。xterm の既定は URL なしの window.open() で開くため、Electron の窓を作らず
+  // 表示中の URL と同じく ⌘ クリックで既定のブラウザに渡す(http(s) 以外は main 側で開かない)
+  linkHandler: {
+    activate: (ev, uri) => {
+      if (ev.metaKey) api.openExternal(uri)
+    },
+  },
   theme: {
     background: '#0f0f11',
     foreground: '#e4e4e7',

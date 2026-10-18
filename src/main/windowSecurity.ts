@@ -11,7 +11,7 @@ export function restrictWebContents(): void {
   app.on('web-contents-created', (_e, contents) => {
     contents.on('will-navigate', (event) => event.preventDefault())
     contents.on('will-attach-webview', (event) => event.preventDefault())
-    // xterm の OSC 8 リンクは window.open を使う。http(s) だけ既定のブラウザで開く
+    // リンクは画面側で openExternal に渡す。window.open で http(s) が来た場合も既定のブラウザで開く
     contents.setWindowOpenHandler(({url}) => {
       if (isWebUrl(url)) void shell.openExternal(url)
       return {action: 'deny'}
