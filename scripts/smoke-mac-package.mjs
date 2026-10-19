@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {execFileSync, spawnSync} from 'node:child_process'
 import {mkdirSync, mkdtempSync, readdirSync, rmSync} from 'node:fs'
+import {createRequire} from 'node:module'
 import path from 'node:path'
 
 const app = path.resolve(process.argv[2] ?? 'release/mac-arm64/Claude Term.app')
@@ -15,8 +16,9 @@ function uuid(file) {
 }
 
 execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], {stdio: 'pipe'})
-const sourceApp = path.resolve('node_modules/electron/dist/Electron.app')
-const originalUuid = uuid(path.join(sourceApp, 'Contents/MacOS/Electron'))
+// Electron 43 は本体をインストールの時ではなく、初めて場所を聞かれたときにダウンロードする
+// (新しい npm は依存の install スクリプトも止める)。require('electron') で場所を聞き、無ければ取らせる
+const originalUuid = uuid(createRequire(import.meta.url)('electron'))
 const mainInfo = readPlist(path.join(app, 'Contents/Info.plist'))
 assert.equal(mainInfo.CFBundleIdentifier, 'jp.sabira.claude-term')
 assert.ok(mainInfo.NSLocalNetworkUsageDescription)
