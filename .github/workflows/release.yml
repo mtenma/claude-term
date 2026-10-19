@@ -1,0 +1,185 @@
+name: release
+
+# アプリの更新のリリース(手順 docs/release.md)。
+# タグ v<版> を push すると、Mac でビルドし、署名して、このリポジトリの Releases に載せる。
+# 各 Mac の Claude Term(0.1.9 以降)は、起動したときに latest-mac.json を見て「アップデートのお知らせ」を出す。
+# Latest にするのは main に入ったコミットのタグだけ。それ以外(作業ブランチのタグ)はプレリリースにし、各 Mac には知らせない。
+# workflow_dispatch は試しのビルド(署名と公開はしない)。
+# Secrets: 環境 release の UPDATE_SIGNING_KEY(更新の署名の秘密鍵)。環境 release は v* のタグからだけ使える。
+# 秘密の守り方(tomari・ryukyu-yayoi の release.yml と同じ考え方):
+#   - 使う Actions はコミット SHA で固定する(タグは付け替えられるため)。
+#   - build(npm の依存を動かす。鍵なし)・sign(npm を動かさない。鍵だけ)・publish(GITHUB_TOKEN だけ)をジョブで分ける。
+#   - タグは環境変数で渡し、最初の段で v<数>.<数>.<数> の形を確かめる。
+#   - 公開リポジトリなので実行の記録は誰でも読める。鍵の値やそこから作った値を出さない(set -x を使わない)。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      commit: ${{ steps.target.outputs.commit }}
+      tag: ${{ steps.target.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # 依存の取得の結果を使い回さない(署名に関わる流れなので、ほかの実行のキャッシュを持ち込まない)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      # 作ったコミットを記録し、公開の段の判定はこのコミットで行う(途中でタグを付け替えられても、作った物で判定する)
+      - name: 作るコミットと版を決める
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = push ]; then
+            echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 版と変更の内容を確かめる
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: node scripts/release.mjs check "$TAG"
+
+      - name: 依存を入れる
+        run: npm ci
+
+      - name: 型の検査とスモーク
+        run: |
+          npm run check
+          npm run smoke
+          node scripts/smoke-hooks.mjs
+          node scripts/smoke-usage.mjs
+          node scripts/smoke-update.mjs
+
+      - name: パッケージにする
+        run: npm run package -- --publish never
+
+      - name: パッケージの検査
+        run: node scripts/smoke-mac-package.mjs
+
+      # アプリの名札・版・署名・検査用の目印・公開鍵を確かめ、配る zip と DMG を作る(鍵は使わない)
+      - name: 配る zip と DMG を作る
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: node scripts/release.mjs bundle "$TAG" out
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bundle
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      # 署名に要るファイルだけを取り出す(npm の依存は入れない・動かさない)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/release.mjs
+            src/main/updateKey.ts
+            docs/releases
+            package.json
+            package-lock.json
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bundle
+          path: out
+
+      # zip を計算し直してから署名し、src/main/updateKey.ts の公開鍵で確かめてから latest-mac.json を作る
+      - name: 署名する
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: node scripts/release.mjs sign "$TAG" out
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [build, sign]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      COMMIT: ${{ needs.build.outputs.commit }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+          path: out
+
+      # 作ったコミットが main に入っているか(main の先頭と同じか、その祖先か)。名前の取り違えがないように SHA で比べる
+      - name: main に入っている版かを確かめる
+        id: channel
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "作ったコミットの番号がありません: $COMMIT"
+            exit 1
+          fi
+          main=$(gh api "repos/$REPO/branches/main" --jq .commit.sha)
+          status=$(gh api "repos/$REPO/compare/$main...$COMMIT" --jq .status)
+          echo "作ったコミット $COMMIT と main の先頭 $main の比べ: $status"
+          if [ "$status" = identical ] || [ "$status" = behind ]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 下書きで載せ終わってから公開する(下書きのあいだは latest に出ないので、zip が無いのに latest-mac.json だけ
+      # 見える時間ができない)
+      - name: リリースする
+        env:
+          LATEST: ${{ steps.channel.outputs.latest }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          if [ "$LATEST" = true ]; then kind=(--latest); else kind=(--prerelease --latest=false); fi
+          gh release create "$TAG" "out/Claude-Term-$v-arm64-mac.zip" "out/Claude-Term-$v-arm64.dmg" out/latest-mac.json \
+            --repo "$REPO" --verify-tag --title "Claude Term $v" --notes-file out/notes.md --draft
+          gh release edit "$TAG" --repo "$REPO" --draft=false "${kind[@]}"
+          echo "公開しました(Latest: $LATEST)"
