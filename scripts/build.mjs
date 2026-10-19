@@ -1,6 +1,18 @@
 import * as esbuild from 'esbuild'
 import {cpSync, readFileSync} from 'node:fs'
 
+// 検査用の版(アプリの更新の通しの検査、scripts/smoke-update-package.mjs)だけに埋め込む設定と出力先。
+// 環境変数ではなく引数で渡す(普段の npm start / npm run package に紛れ込まないように)。配る版では null
+const args = process.argv.slice(2)
+const option = (name) => {
+  const at = args.indexOf(name)
+  return at >= 0 ? args[at + 1] : undefined
+}
+const updateTestFile = option('--update-test')
+const out = option('--outdir') ?? 'dist'
+const updateTest = updateTestFile ? JSON.stringify(JSON.parse(readFileSync(updateTestFile, 'utf8'))) : 'null'
+if (updateTestFile) console.warn(`[build] 検査用の更新の設定を埋め込みます(${updateTestFile})。この版は配らないでください`)
+
 const common = {
   bundle: true,
   sourcemap: false,
@@ -35,16 +47,17 @@ await Promise.all([
   esbuild.build({
     ...common,
     entryPoints: ['src/main/main.ts'],
-    outfile: 'dist/main/main.js',
+    outfile: `${out}/main/main.js`,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
     external: ['electron', 'node-pty'],
+    define: {__CLAUDE_TERM_UPDATE_TEST__: updateTest},
   }),
   esbuild.build({
     ...common,
     entryPoints: ['src/main/codexHookRelay.ts'],
-    outfile: 'dist/main/codexHookRelay.js',
+    outfile: `${out}/main/codexHookRelay.js`,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
@@ -53,7 +66,7 @@ await Promise.all([
   esbuild.build({
     ...common,
     entryPoints: ['src/main/usageService.ts'],
-    outfile: 'dist/main/usageService.js',
+    outfile: `${out}/main/usageService.js`,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
@@ -61,7 +74,7 @@ await Promise.all([
   esbuild.build({
     ...common,
     entryPoints: ['src/preload/preload.ts'],
-    outfile: 'dist/preload/preload.js',
+    outfile: `${out}/preload/preload.js`,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
@@ -70,7 +83,7 @@ await Promise.all([
   esbuild.build({
     ...common,
     entryPoints: ['src/preload/usagePreload.ts'],
-    outfile: 'dist/preload/usagePreload.js',
+    outfile: `${out}/preload/usagePreload.js`,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
@@ -78,8 +91,25 @@ await Promise.all([
   }),
   esbuild.build({
     ...common,
+    entryPoints: ['src/preload/updatePreload.ts'],
+    outfile: `${out}/preload/updatePreload.js`,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    external: ['electron'],
+  }),
+  esbuild.build({
+    ...common,
+    entryPoints: ['src/renderer/update.ts'],
+    outfile: `${out}/renderer/update.js`,
+    platform: 'browser',
+    format: 'iife',
+    target: 'es2022',
+  }),
+  esbuild.build({
+    ...common,
     entryPoints: ['src/renderer/cost.ts'],
-    outfile: 'dist/renderer/cost.js',
+    outfile: `${out}/renderer/cost.js`,
     platform: 'browser',
     format: 'iife',
     target: 'es2022',
@@ -87,7 +117,7 @@ await Promise.all([
   esbuild.build({
     ...common,
     entryPoints: ['src/renderer/renderer.ts'],
-    outfile: 'dist/renderer/renderer.js',
+    outfile: `${out}/renderer/renderer.js`,
     platform: 'browser',
     format: 'iife',
     target: 'es2022',
@@ -95,5 +125,4 @@ await Promise.all([
   }),
 ])
 
-cpSync('src/renderer/index.html', 'dist/renderer/index.html')
-cpSync('src/renderer/cost.html', 'dist/renderer/cost.html')
+for (const page of ['index.html', 'cost.html', 'update.html']) cpSync(`src/renderer/${page}`, `${out}/renderer/${page}`)

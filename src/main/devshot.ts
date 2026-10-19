@@ -5,6 +5,7 @@ import {CH} from '../shared/types'
 import {whenAllPtysExited, type SessionManager} from './sessions'
 import {checkResizeWrapping} from './devshotResize'
 import {checkCostWindow} from './devshotCost'
+import {checkUpdateWindow} from './devshotUpdate'
 
 /**
  * 開発検証用の自動スクリーンショット。
@@ -25,6 +26,9 @@ import {checkCostWindow} from './devshotCost'
  *   nav-guard   … 画面側からのページ移動と window.open の抑止、OSC 8 リンクの ⌘ クリックを検証
  *   cost / cost-light / cost-empty … 偽の記録でコスト画面を開き、表示・操作・外観の追随を検証して撮影
  *   cost-live   … 実際の記録でコスト画面を撮影(CLAUDE_TERM_USAGE_DB で別の DB を指定する)
+ *   update / update-light / update-busy / update-error / update-zoom
+ *               … 偽の更新情報でお知らせの窓を開き、表示・焦点・閉じない守り・拡大を検証して撮影
+ *               (ダウンロードや入れ替えは動かない)
  * CLAUDE_TERM_WINSIZE=<幅>x<高さ> で撮影ウィンドウの大きさを指定できる。
  * 撮影後、成功なら exit 0 / 失敗なら exit 1 で終了する。
  */
@@ -68,6 +72,13 @@ export function maybeRunDevshot(win: BrowserWindow, sm: SessionManager): void {
   } else if (scenario === 'cost' || scenario === 'cost-light' || scenario === 'cost-empty' || scenario === 'cost-live') {
     scenarioTask = checkCostWindow(scenario, (costWindow) => {
       shotWindow = costWindow
+    }).catch((error) => {
+      scenarioFailure = error instanceof Error ? error : new Error(String(error))
+    })
+  } else if (scenario === 'update' || scenario === 'update-light' || scenario === 'update-busy' ||
+    scenario === 'update-error' || scenario === 'update-zoom') {
+    scenarioTask = checkUpdateWindow(scenario, sm, (updateWindow) => {
+      shotWindow = updateWindow
     }).catch((error) => {
       scenarioFailure = error instanceof Error ? error : new Error(String(error))
     })

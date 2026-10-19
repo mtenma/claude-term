@@ -32,7 +32,7 @@ Codex も通常の `codex` 起動で状態連携できます(初回は下記の 
 
 ### A. ビルド済み DMG(Releases からダウンロード)
 
-[Releases](../../releases) から `Claude Term-<version>-arm64.dmg` をダウンロードし、開いて `Claude Term.app` を Applications にドラッグしてください。
+[Releases](../../releases) から `Claude-Term-<version>-arm64.dmg`(0.1.8 までは `Claude Term-<version>-arm64.dmg`)をダウンロードし、開いて `Claude Term.app` を Applications にドラッグしてください。
 
 **重要**: 配布物は ad-hoc 署名(Apple の公証なし)のため、ダウンロード後そのまま開くと macOS に「開発元を確認できない/壊れている」と拒否されます。インストール後に一度だけ以下を実行してください:
 
@@ -41,6 +41,16 @@ xattr -cr "/Applications/Claude Term.app"
 ```
 
 (またはシステム設定 → プライバシーとセキュリティ → 「このまま開く」)
+
+### 更新のお知らせ(0.1.9 以降)
+
+パッケージ版は、起動したときに GitHub の Releases の `latest-mac.json` を 1 回だけ取りに行き、新しい版があれば「アップデートのお知らせ」を出します。［今すぐ更新］で、ダウンロード → 確かめ → Claude Term の終了 → 入れ替え → 新しい版で開き直し、まで自動で行います。
+
+- 更新すると、開いているセッション(実行中の Claude Code・Codex を含む)はすべて終了します。お知らせに件数を出します
+- 新しい版は、Ed25519 の署名(公開鍵は `src/main/updateKey.ts`)・大きさ・SHA-256・中のアプリの名札と版・`codesign --verify` を確かめてから入れ替えます。署名が合わない版は入れません
+- 送るのは GET の要求だけです。保存しない通信を使い、cookie やキャッシュを残さず、User-Agent に版を入れません。取りに行けないときは何も出しません
+- 自動で入れ替えられるのは、書き込める場所(「アプリケーション」フォルダなど)に置いたアプリだけです。DMG から直接開いたときなどは、手で入れ替える案内を出します
+- `npm start` の開発版は確かめに行きません。リリースの手順は [docs/release.md](docs/release.md)
 
 ### B. ソースからビルド(推奨・警告なし)
 
@@ -169,12 +179,15 @@ node scripts/smoke-terminal-resize.mjs # 全角境界・カーソル・保存位
 node scripts/smoke-shell-integration.mjs # zsh 起動ファイルの消失・破損・書込失敗からの復旧
 node scripts/smoke-session-flow.mjs      # 入力・ACK の宛先、裏側の大量出力、終了時のタイマー解除
 node scripts/smoke-usage.mjs             # コスト画面の取込み・重複除去・料金計算・差分取込み・DB の権限と退避
+node scripts/smoke-update.mjs            # 更新の署名・取得・ダウンロード・展開・置き場所・入れ替え・開き直し、release.mjs
+node scripts/smoke-update-package.mjs    # 検査用のパッケージ 2 つで、更新を最後まで通す(数分・窓が出る)
 CLAUDE_TERM_SCREENSHOT=/tmp/s.png CLAUDE_TERM_DEMO=states npm run shot  # 自動スクリーンショット
 CLAUDE_TERM_SCREENSHOT=/tmp/codex.png CLAUDE_TERM_DEMO=codex npm start # Codex表示・入力・切替・リサイズ
 CLAUDE_TERM_SCREENSHOT=/tmp/wrap.png CLAUDE_TERM_DEMO=resize-wrap npm start # DOM/WebGL・日本語の出力中リサイズ・シェル入力
 CLAUDE_TERM_SCREENSHOT=/tmp/edge.png CLAUDE_TERM_DEMO=right-edge npm start # 句読点・太字等の右端欠け・描画位置・ズーム・切替
 CLAUDE_TERM_SCREENSHOT=/tmp/nav.png CLAUDE_TERM_DEMO=nav-guard npm start # ページ移動・新規ウィンドウの抑止、OSC 8 リンクの ⌘ クリック
 TZ=Asia/Tokyo CLAUDE_TERM_SCREENSHOT=/tmp/cost.png CLAUDE_TERM_DEMO=cost npm start # コスト画面(偽データ・別 DB)。cost-light / cost-empty も
+CLAUDE_TERM_SCREENSHOT=/tmp/update.png CLAUDE_TERM_DEMO=update npm start # 更新のお知らせ(偽の情報)。update-light / update-busy / update-error / update-zoom も
 ```
 
 ### アーキテクチャ概要
@@ -188,6 +201,7 @@ TZ=Asia/Tokyo CLAUDE_TERM_SCREENSHOT=/tmp/cost.png CLAUDE_TERM_DEMO=cost npm sta
 - 全 PTY をメイン表示の cols/rows に合わせ、Codex などの出力途中の行は全角文字と論理的なカーソル位置を保って折り返す。xterm 6 の内部 API への依存は `src/shared/terminalResize.ts` に限定し、更新時は回帰テストで確認
 - macOS の前面プロセスが zsh / bash などのシェルなら、入力行の再描画をシェルに任せる。画面側にも同じ選択を寸法変更とともに通知
 - すべての画面で、ページ側から始まる移動(ファイルのドロップなど)と新規ウィンドウを止め、画面からの権限要求も拒否する。OSC 8 のリンクは、表示中の URL と同じく ⌘ クリックで既定のブラウザに渡す(http(s) のみ)
+- アプリの更新は、署名つきの `latest-mac.json` を起動時に 1 回確かめ、［今すぐ更新］でダウンロード・展開・確かめまで済ませてから終了する。入れ替えは終了の直前(will-quit で PTY と集計の停止を待った後)に `rename(2)` で行い、元の版は次の起動で成功を確かめるまで残す。開き直しは、終了を待つ切り離した sh に任せる
 - コスト画面の集計は utilityProcess で動かし、SQLite(Electron 内蔵の `node:sqlite`)や記録の読込みの異常で PTY を抱える main プロセスが落ちないようにする。記録はファイルごとに inode・先頭のハッシュ・読んだ位置を覚えて差分だけ読み、行・位置・途中状態を同じトランザクションで書く
 
 ## 既知の制限

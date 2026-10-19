@@ -66,4 +66,15 @@ const cost = spawnSync(path.join(app, 'Contents/MacOS', mainInfo.CFBundleExecuta
 })
 rmSync(costDir, {recursive: true, force: true})
 assert.equal(cost.status, 0, `Packaged cost window failed: ${cost.error ?? cost.stderr}`)
-console.log(`macOS package OK: signed app and ${bundles.length - 1} helpers, distinct UUIDs, LAN usage descriptions, packaged PTY, cost window`)
+
+// 更新のお知らせの窓: asar の中の画面・preload が読み込め、偽の更新情報で表示と操作の検証が通ること(通信と入れ替えはしない)
+const updateDir = mkdtempSync(path.resolve('dist-test', 'package-update-'))
+const update = spawnSync(path.join(app, 'Contents/MacOS', mainInfo.CFBundleExecutable), [], {
+  encoding: 'utf8',
+  timeout: 60000,
+  env: {...process.env, CLAUDE_TERM_DEMO: 'update-busy', CLAUDE_TERM_SHOT_DELAY: '6000',
+    CLAUDE_TERM_SCREENSHOT: path.join(updateDir, 'update.png')},
+})
+rmSync(updateDir, {recursive: true, force: true})
+assert.equal(update.status, 0, `Packaged update window failed: ${update.error ?? update.stderr}`)
+console.log(`macOS package OK: signed app and ${bundles.length - 1} helpers, distinct UUIDs, LAN usage descriptions, packaged PTY, cost window, update window`)

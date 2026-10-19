@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  />
+  <title>アップデート — Claude Term</title>
+  <link rel="stylesheet" href="./update.css" />
+</head>
+<body>
+  <main class="dialog" role="alertdialog" aria-labelledby="title" aria-describedby="version caution">
+    <header class="head">
+      <div class="badge" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3.5v11" />
+          <path d="M7.5 10l4.5 4.5 4.5-4.5" />
+          <path d="M4.5 16.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2" />
+        </svg>
+      </div>
+      <div class="titles">
+        <h1 id="title">アップデートのお知らせ</h1>
+        <p class="sub">新しいバージョンの Claude Term があります</p>
+      </div>
+    </header>
+
+    <div class="body">
+      <p class="notice" id="previous" hidden></p>
+      <p class="version" id="version"></p>
+      <h2 class="label" id="notes-label">変更の内容</h2>
+      <div class="notes" id="notes" tabindex="0" aria-labelledby="notes-label"></div>
+      <p class="caution" id="caution"></p>
+      <div class="progress" id="progress-box" tabindex="-1" hidden>
+        <div class="progress-text">
+          <span id="step" role="status"></span>
+          <span id="amount" aria-hidden="true"></span>
+        </div>
+        <progress id="progress" max="1" aria-labelledby="step"></progress>
+      </div>
+      <p class="error" id="error" role="alert" hidden></p>
+    </div>
+
+    <footer class="foot">
+      <button type="button" id="later">あとで</button>
+      <span class="spacer"></span>
+      <button type="button" class="primary" id="primary">今すぐ更新</button>
+    </footer>
+  </main>
+  <script src="./update.js"></script>
+</body>
+</html>

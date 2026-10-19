@@ -8,7 +8,11 @@ import {ensureClaudeHooks} from './claudeHooks'
 import {ensureCodexHooks} from './codexHooks'
 import {maybeRunDevshot} from './devshot'
 import {restrictWebContents} from './windowSecurity'
-import {disposeUsage, isCostWindow, openCostWindow, registerUsageIpc, sendAppearanceToCostWindow} from './usageWindow'
+import {disposeUsage, openCostWindow, registerUsageIpc, sendAppearanceToCostWindow} from './usageWindow'
+import {
+  applyUpdateTestPaths, finishUpdateOnQuit, isUpdateTestBuild, notifySessionsChanged, registerUpdateIpc,
+  sendAppearanceToUpdateWindow, startAppUpdates,
+} from './appUpdate'
 
 // 1ウィンドウ = 1 SessionManager。webContents.id をキーに対応関係を持つ
 interface WindowContext {
@@ -36,6 +40,25 @@ function updateDockBadge(): void {
     n += ctx.sm.currentUpdate().sessions.filter((s) => s.state === 'attention').length
   }
   app.dock?.setBadge(n > 0 ? String(n) : '')
+  // お知らせの窓の「開いているセッション(今 N 件)」も、同じきっかけで数え直す
+  notifySessionsChanged()
+}
+
+/** 全部の窓の、終了していないセッションの数(更新で終了するもの) */
+function liveSessionCount(): number {
+  let n = 0
+  for (const ctx of contexts.values()) {
+    n += ctx.sm.currentUpdate().sessions.filter((s) => s.state !== 'exited').length
+  }
+  return n
+}
+
+/** ターミナルの窓か(コスト画面・お知らせの窓はページ内の操作に回す) */
+function isTerminalWindow(win: BrowserWindow): boolean {
+  for (const ctx of contexts.values()) {
+    if (ctx.win === win) return true
+  }
+  return false
 }
 
 function notifySession(ctx: WindowContext, info: SessionInfo, subtitle: string, body: string): void {
@@ -87,12 +110,13 @@ function registerIpc(): void {
     // 送信元も含む全ウィンドウへ正規化済みの値を配って同期する
     for (const ctx of contexts.values()) send(ctx, CH.settingsUpdate, a)
     sendAppearanceToCostWindow(a)
+    sendAppearanceToUpdateWindow(a)
   })
 }
 
-/** コスト画面から ⌘, を押したときは、ターミナル窓の外観設定を開く */
+/** コスト画面・お知らせの窓から ⌘, を押したときは、ターミナル窓の外観設定を開く */
 async function openSettingsFrom(win: BrowserWindow): Promise<void> {
-  let target = isCostWindow(win) ? [...contexts.values()][0]?.win : win
+  let target = isTerminalWindow(win) ? win : [...contexts.values()][0]?.win
   if (!target) target = (await createWindow()).win
   target.focus()
   target.webContents.send(CH.editOpenSettings)
@@ -245,9 +269,9 @@ function setupMenu(): void {
           accelerator: 'CmdOrCtrl+A',
           click: (_item, win) => {
             if (!(win instanceof BrowserWindow)) return
-            // コスト画面は通常のページなので、ページ内の文字を選択する
-            if (isCostWindow(win)) win.webContents.selectAll()
-            else win.webContents.send(CH.editSelectAll)
+            // コスト画面・お知らせの窓は通常のページなので、ページ内の文字を選択する
+            if (isTerminalWindow(win)) win.webContents.send(CH.editSelectAll)
+            else win.webContents.selectAll()
           },
         },
         {type: 'separator'},
@@ -255,7 +279,7 @@ function setupMenu(): void {
           label: '検索',
           accelerator: 'CmdOrCtrl+F',
           click: (_item, win) => {
-            if (win instanceof BrowserWindow && !isCostWindow(win)) win.webContents.send(CH.editFind)
+            if (win instanceof BrowserWindow && isTerminalWindow(win)) win.webContents.send(CH.editFind)
           },
         },
       ],
@@ -311,17 +335,30 @@ async function main(): Promise<void> {
   })
   registerIpc()
   registerUsageIpc()
+  registerUpdateIpc()
   setupMenu()
 
   const first = await createWindow()
+  const updateHooks = {
+    liveSessions: liveSessionCount,
+    allowQuit: () => {
+      for (const ctx of contexts.values()) ctx.closeConfirmed = true
+    },
+  }
   if (shotMode) {
+    startAppUpdates(updateHooks)
     maybeRunDevshot(first.win, first.sm)
   } else {
-    await ensureClaudeHooks(first.win)
-    if (!first.win.isDestroyed()) await ensureCodexHooks(first.win)
+    // 検査用の版(アプリの更新の通しの検査)は、同意のダイアログを出さず ~/.claude・~/.codex に触れない
+    if (!isUpdateTestBuild()) {
+      await ensureClaudeHooks(first.win)
+      if (!first.win.isDestroyed()) await ensureCodexHooks(first.win)
+    }
+    startAppUpdates(updateHooks)
   }
 }
 
+applyUpdateTestPaths()
 restrictWebContents()
 
 app.on('activate', () => {
@@ -340,7 +377,9 @@ app.on('will-quit', (e) => {
   if (quitReady) return
   e.preventDefault()
   for (const ctx of contexts.values()) ctx.sm.disposeAll()
-  void Promise.all([whenAllPtysExited(1500), disposeUsage()]).then(() => {
+  void Promise.all([whenAllPtysExited(1500), disposeUsage()]).then(async () => {
+    // アプリの更新を予約していれば、ここ(子プロセスも窓も無くなった後)で入れ替えて開き直しを頼む
+    await finishUpdateOnQuit()
     // 飛行中の onData 等のコールバックが掃けるまで一拍置く
     setTimeout(() => {
       quitReady = true

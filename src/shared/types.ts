@@ -122,6 +122,35 @@ export type UsageEvent =
   | {kind: 'error'; code: UsageErrorCode}
   | {kind: 'deleted'}
 
+// ---- アプリの更新(お知らせの窓) ----
+
+export type UpdatePhase = 'ready' | 'preparing' | 'downloading' | 'verifying' | 'quitting' | 'error'
+
+export type UpdateErrorCode =
+  | 'location' | 'other_instance' | 'disk_space' | 'network' | 'corrupt' | 'invalid_app' | 'quit_failed' | 'internal'
+
+/**
+ * 前回の更新で入れ替えられなかった理由(次の起動で知らせる)。
+ * swap_failed: 元に戻した、stranded: 元の場所に戻せなかった、unknown: 新しい版で起動しなかった
+ */
+export type UpdateFailure = 'swap_failed' | 'stranded' | 'unknown'
+
+/** お知らせの窓に映す状態。main だけが持ち、画面は映すだけ */
+export interface UpdateView {
+  phase: UpdatePhase
+  version: string
+  current: string
+  notes: string
+  /** 全部の窓の、終了していないセッションの数 */
+  sessions: number
+  received: number
+  total: number
+  error: UpdateErrorCode | null
+  /** location のときの置き場所(~ 略記)、disk_space のときの必要な MB など */
+  errorDetail: string
+  previousFailure: UpdateFailure | null
+}
+
 // IPC チャンネル名。main / preload / renderer で共有する契約
 export const CH = {
   sessionCreate: 'session:create',
@@ -145,4 +174,10 @@ export const CH = {
   usageRefresh: 'usage:refresh',
   usageDelete: 'usage:delete',
   usageEvent: 'usage:event',
+  updateGet: 'update:get',
+  updateView: 'update:view',
+  updateStart: 'update:start',
+  updateCancel: 'update:cancel',
+  updateLater: 'update:later',
+  updateOpenReleases: 'update:openReleases',
 } as const

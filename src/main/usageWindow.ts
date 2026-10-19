@@ -145,10 +145,6 @@ function requestScan(manual: boolean): void {
 const fromCostWindow = (event: IpcMainEvent | IpcMainInvokeEvent): boolean =>
   win !== null && !win.isDestroyed() && event.sender === win.webContents
 
-export function isCostWindow(target: BrowserWindow | null | undefined): boolean {
-  return target !== null && target !== undefined && target === win
-}
-
 export function sendAppearanceToCostWindow(appearance: AppearanceSettings): void {
   if (win && !win.isDestroyed()) win.webContents.send(CH.settingsUpdate, appearance)
 }

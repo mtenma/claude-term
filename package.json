@@ -29,9 +29,11 @@
       "node_modules/node-pty/**"
     ],
     "npmRebuild": false,
+    "publish": null,
     "afterPack": "scripts/prepare-mac-package.cjs",
     "mac": {
       "identity": "-",
+      "artifactName": "Claude-Term-${version}-${arch}.${ext}",
       "extendInfo": {
         "NSLocalNetworkUsageDescription": "ターミナルで実行する ping、ssh、開発ツールなどが、同じネットワーク上のサーバーや機器に接続するために使用します。"
       },
