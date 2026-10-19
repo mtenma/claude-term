@@ -35,20 +35,37 @@ process.on('exit', () => {
   } catch {
     // 残っていなければよい
   }
+  // 作った .app は(起動しなくても)LaunchServices に登録される。展開の途中だけ現れたパスや、入れ替えで動かした
+  // 元の場所の登録も残るので、登録の一覧から dist-test の下のものを探して外す
+  unregisterUnder(work)
+  // 検査用の版を起動すると、macOS がその bundle ID の設定ファイルを ~/Library/Preferences に作る
   try {
-    const apps = execFileSync('/usr/bin/find', [work, '-name', '*.app', '-type', 'd', '-prune'], {encoding: 'utf8'})
-    for (const app of apps.split('\n').filter(Boolean)) {
-      try {
-        execFileSync(LSREGISTER, ['-u', app], {stdio: 'ignore'})
-      } catch {
-        // 片付けの失敗で結果を変えない
-      }
-    }
+    execFileSync('/usr/bin/defaults', ['delete', TEST_ID], {stdio: 'ignore'})
   } catch {
-    // 同上
+    // 無ければよい
   }
+  // defaults delete の後も、空のファイルが残る
+  fs.rmSync(path.join(os.homedir(), 'Library/Preferences', `${TEST_ID}.plist`), {force: true})
   fs.rmSync(work, {recursive: true, force: true})
 })
+
+function unregisterUnder(dir) {
+  let dump = ''
+  try {
+    dump = execFileSync(LSREGISTER, ['-dump'], {encoding: 'utf8', maxBuffer: 512 << 20, stdio: ['ignore', 'pipe', 'ignore']})
+  } catch {
+    return
+  }
+  for (const line of dump.split('\n')) {
+    const match = /^path:\s+(.*?)(?: \(0x[0-9a-f]+\))?$/.exec(line)
+    if (!match || !match[1].startsWith(dir + path.sep)) continue
+    try {
+      execFileSync(LSREGISTER, ['-u', match[1]], {stdio: 'ignore'})
+    } catch {
+      // 片付けの失敗で結果を変えない
+    }
+  }
+}
 
 // 本物の設定に触れていないことを、前後で比べる(読むだけ)
 const watched = [path.join(os.homedir(), '.claude/settings.json'), path.join(os.homedir(), '.codex/hooks.json')]

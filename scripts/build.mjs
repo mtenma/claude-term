@@ -10,7 +10,10 @@ const option = (name) => {
 }
 const updateTestFile = option('--update-test')
 const out = option('--outdir') ?? 'dist'
-const updateTest = updateTestFile ? JSON.stringify(JSON.parse(readFileSync(updateTestFile, 'utf8'))) : 'null'
+// 目印は必ず足す(scripts/release.mjs の bundle が、配る版に紛れ込んだ検査用の版をこれで見つける)
+const updateTest = updateTestFile
+  ? JSON.stringify({...JSON.parse(readFileSync(updateTestFile, 'utf8')), marker: 'CLAUDE_TERM_UPDATE_TEST_BUILD'})
+  : 'null'
 if (updateTestFile) console.warn(`[build] 検査用の更新の設定を埋め込みます(${updateTestFile})。この版は配らないでください`)
 
 const common = {

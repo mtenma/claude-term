@@ -112,10 +112,7 @@ jobs:
             package-lock.json
           sparse-checkout-cone-mode: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-
+      # release.mjs は Node の標準だけで動くので、ランナーに入っている Node を使う(鍵のあるジョブで動く Actions を減らす)
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: bundle
@@ -152,7 +149,8 @@ jobs:
           name: release
           path: out
 
-      # 作ったコミットが main に入っているか(main の先頭と同じか、その祖先か)。名前の取り違えがないように SHA で比べる
+      # 作ったコミットが main に入っているか(main の先頭と同じか、その祖先か)。名前の取り違えがないように SHA で比べる。
+      # 今の Latest より古い版の番号なら、main に入っていても Latest にしない(新しい版の利用者に古い版を知らせない)
       - name: main に入っている版かを確かめる
         id: channel
         run: |
@@ -164,7 +162,14 @@ jobs:
           main=$(gh api "repos/$REPO/branches/main" --jq .commit.sha)
           status=$(gh api "repos/$REPO/compare/$main...$COMMIT" --jq .status)
           echo "作ったコミット $COMMIT と main の先頭 $main の比べ: $status"
-          if [ "$status" = identical ] || [ "$status" = behind ]; then
+          current=$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null || true)
+          newer=true
+          if [ -n "$current" ] && [ "$current" != "$TAG" ]; then
+            highest=$(printf '%s\n%s\n' "${current#v}" "${TAG#v}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+            [ "$highest" = "${TAG#v}" ] || newer=false
+          fi
+          echo "今の Latest: ${current:-なし}、この版のほうが新しい: $newer"
+          if { [ "$status" = identical ] || [ "$status" = behind ]; } && [ "$newer" = true ]; then
             echo "latest=true" >> "$GITHUB_OUTPUT"
           else
             echo "latest=false" >> "$GITHUB_OUTPUT"

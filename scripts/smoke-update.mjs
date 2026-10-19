@@ -277,6 +277,14 @@ await check('ダウンロード: 長い・短い・申告の違い・SHA-256 の
   const stalled = await rejectsWith(download('/stall', {stallMs: 300}), 'network', 'stall')
   assert.match(stalled.message, /stalled/)
   await rejectsWith(download('/stall', {abortAfter: 100}), 'cancelled', 'cancel')
+  // 中止済みの signal(準備中に［中止］・⌘Q)では、始めずに止まる(abort の知らせは来ない)
+  const aborted = new AbortController()
+  aborted.abort()
+  const started = Date.now()
+  await rejectsWith(U.downloadZip(nodeFetch, {...zipRelease, url: `${base}/zip`}, path.join(work, 'never.zip'),
+    {stallMs: 5000, signal: aborted.signal, onProgress: () => {}}), 'cancelled', 'pre-aborted')
+  assert.ok(Date.now() - started < 1000)
+  assert.ok(!fs.existsSync(path.join(work, 'never.zip')))
   await rejectsWith(download('/missing'), 'network', '404')
 })
 
@@ -339,7 +347,7 @@ await check('置き場所: .app でない・App Translocation・書き込めな�
   }
 })
 
-await check('置き場所: 別のボリュームのアプリを断る(rename の EXDEV)', async () => {
+await check('置き場所: 別のボリュームのアプリを断る(rename の EXDEV は案内の文を分ける)', async () => {
   const image = path.join(work, 'vol.dmg')
   execFileSync('/usr/bin/hdiutil', ['create', '-size', '4m', '-fs', 'APFS', '-volname', 'CTUPDATE', image], {stdio: 'pipe'})
   const mountRoot = path.join(work, 'mnt')
@@ -350,7 +358,7 @@ await check('置き場所: 別のボリュームのアプリを断る(rename の
   mounts.push(mount)
   const app = makeApp(mount)
   try {
-    await throwsCode(() => U.checkInstallable(app, path.join(work, 'updates-vol')), 'location', 'other volume')
+    await throwsCode(() => U.checkInstallable(app, path.join(work, 'updates-vol')), 'other_volume', 'other volume')
   } finally {
     try {
       execFileSync(LSREGISTER, ['-u', app], {stdio: 'ignore'})
@@ -494,6 +502,8 @@ await check('release check: タグの形・版の食い違い・変更の内容�
   for (const [label, notes] of Object.entries({
     missing: null, empty: '\n', crlf: '- a\r\n', heading: '# 見出し\n', mention: '- @someone\n', code: '- `x`\n',
     html: '- <b>\n', long: 'あ'.repeat(2001), bom: '﻿- a\n',
+    issue: '- #12 を直した\n', quote: '> 引用\n', link: '- [a](b)\n', table: '| a |\n', emphasis: '- *強調*\n',
+    underscore: '- a_b\n', entity: '- &amp;\n', rule: '- a\n---\n',
   })) {
     assert.throws(() => R.check('v0.1.9', releaseRoot(`notes-${label}`, {notes})), undefined, label)
   }

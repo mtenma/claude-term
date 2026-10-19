@@ -100,8 +100,10 @@ function readNotes(version, root = repoRoot) {
   if (!notes) fail(`docs/releases/${version}.txt が空です`)
   if (notes.length > NOTES_LIMIT) fail(`docs/releases/${version}.txt が長すぎます(${notes.length} 字。${NOTES_LIMIT} 字まで)`)
   for (const [i, line] of notes.split('\n').entries()) {
-    if (/^\s*#/.test(line) || /[@`<]/.test(line)) {
-      fail(`docs/releases/${version}.txt の ${i + 1} 行目に、見た目が変わる記号(行頭の #、@、\`、<)があります`)
+    // リリースのページ(Markdown)では、見出し・リンク・強調・表・引用・通知・issue へのリンクになる記号
+    if (/[#@`<>[\]|*_&\\]/.test(line) || /^\s*([-=])\1{2,}\s*$/.test(line)) {
+      fail(`docs/releases/${version}.txt の ${i + 1} 行目に、リリースのページで見た目が変わる記号があります` +
+        '(# @ ` < > [ ] | * _ & \\ と、- や = だけの行は使えません)')
     }
   }
   return notes

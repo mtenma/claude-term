@@ -45,6 +45,19 @@ async function layoutProblems(win: BrowserWindow): Promise<string[]> {
   return problems
 }
 
+/** 主ボタンの文字と背景のコントラスト比(WCAG)。13px の太字なので 4.5:1 を求める */
+const primaryContrast = (win: BrowserWindow) => js<number>(win, `(() => {
+  const rgb = (c) => c.match(/[\\d.]+/g).slice(0, 3).map(Number)
+  const lum = ([r, g, b]) => {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4 }
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+  }
+  const style = getComputedStyle(document.getElementById('primary'))
+  const a = lum(rgb(style.color))
+  const b = lum(rgb(style.backgroundColor))
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+})()`)
+
 async function open(onOpen: (win: BrowserWindow) => void, patch = {}, notes = FAKE.notes): Promise<BrowserWindow> {
   const win = showUpdateForShot({...FAKE, notes}, patch)
   onOpen(win)
@@ -62,6 +75,11 @@ export async function checkUpdateWindow(variant: Variant, sm: SessionManager,
   let win = await open(onOpen)
 
   if (variant === 'update') {
+    // 既定の外観(強調色 #d97757)でも、主ボタンの文字が読める
+    win.webContents.send(CH.settingsUpdate, DEFAULT_APPEARANCE)
+    await delay(200)
+    const contrast = await primaryContrast(win)
+    if (contrast < 4.5) problems.push(`primary contrast with the default accent is ${contrast.toFixed(2)}`)
     // 変更の内容の HTML は文字のまま表示され、要素として解釈されない
     const dom = await js<{images: number; notes: string; title: string; role: string | null}>(win, `({
       images: document.querySelectorAll('img').length,
@@ -99,6 +117,8 @@ export async function checkUpdateWindow(variant: Variant, sm: SessionManager,
     // 明るい強調色(黄)の主ボタンの文字は黒にする
     const color = await js<string>(win, `getComputedStyle(document.getElementById('primary')).color`)
     if (color !== 'rgb(0, 0, 0)') problems.push(`primary text on yellow is ${color}`)
+    const contrast = await primaryContrast(win)
+    if (contrast < 4.5) problems.push(`primary contrast on yellow is ${contrast.toFixed(2)}`)
     problems.push(...await layoutProblems(win))
   } else if (variant === 'update-busy') {
     setUpdateViewForShot({phase: 'downloading', received: 45_000_000, total: 123_000_000})

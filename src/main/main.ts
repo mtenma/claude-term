@@ -23,6 +23,8 @@ interface WindowContext {
 
 const contexts = new Map<number, WindowContext>()
 let windowSeq = 0
+/** will-quit に入った(全部の窓が閉じ、終了が決まった)。この後は窓を作らない */
+let quitting = false
 let hookPort = 0
 let shotMode = false
 
@@ -117,7 +119,10 @@ function registerIpc(): void {
 /** コスト画面・お知らせの窓から ⌘, を押したときは、ターミナル窓の外観設定を開く */
 async function openSettingsFrom(win: BrowserWindow): Promise<void> {
   let target = isTerminalWindow(win) ? win : [...contexts.values()][0]?.win
-  if (!target) target = (await createWindow()).win
+  if (!target) {
+    if (quitting) return
+    target = (await createWindow()).win
+  }
   target.focus()
   target.webContents.send(CH.editOpenSettings)
 }
@@ -246,7 +251,9 @@ function setupMenu(): void {
         {
           label: '新規ウィンドウ',
           accelerator: 'CmdOrCtrl+N',
-          click: () => void createWindow(),
+          click: () => {
+            if (!quitting) void createWindow()
+          },
         },
         {type: 'separator'},
         {role: 'close', label: 'ウィンドウを閉じる'},
@@ -302,7 +309,9 @@ function setupMenu(): void {
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
   app.dock?.setMenu(
-    Menu.buildFromTemplate([{label: '新規ウィンドウ', click: () => void createWindow()}]),
+    Menu.buildFromTemplate([{label: '新規ウィンドウ', click: () => {
+      if (!quitting) void createWindow()
+    }}]),
   )
 }
 
@@ -344,6 +353,9 @@ async function main(): Promise<void> {
     allowQuit: () => {
       for (const ctx of contexts.values()) ctx.closeConfirmed = true
     },
+    restoreQuitGuard: () => {
+      for (const ctx of contexts.values()) ctx.closeConfirmed = false
+    },
   }
   if (shotMode) {
     startAppUpdates(updateHooks)
@@ -362,7 +374,9 @@ applyUpdateTestPaths()
 restrictWebContents()
 
 app.on('activate', () => {
-  if (app.isReady() && contexts.size === 0) void createWindow()
+  // 終了を待つ間(PTY の終了待ち・アプリの更新の入れ替え)に Dock を押されても窓を作らない。
+  // 作ると、その窓の閉じる確認が最後の app.quit() を取り消す
+  if (app.isReady() && contexts.size === 0 && !quitting) void createWindow()
 })
 
 app.on('window-all-closed', () => {
@@ -376,6 +390,7 @@ let quitReady = false
 app.on('will-quit', (e) => {
   if (quitReady) return
   e.preventDefault()
+  quitting = true
   for (const ctx of contexts.values()) ctx.sm.disposeAll()
   void Promise.all([whenAllPtysExited(1500), disposeUsage()]).then(async () => {
     // アプリの更新を予約していれば、ここ(子プロセスも窓も無くなった後)で入れ替えて開き直しを頼む

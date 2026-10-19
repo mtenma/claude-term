@@ -206,7 +206,9 @@ publish（Ubuntu）: main に入っているかを見る → 下書きで載せ�
 | build のテストやパッケージで止まる | 記録を見て直し、上と同じくタグを打ち直します。Actions の機械のたまたまの失敗なら、タグはそのままで［Re-run failed jobs］ |
 | sign が「秘密鍵 … がないか、形が違います」「公開鍵で確かめられません」で止まる | 1.2 の Secret を入れ直します(`updateKey.ts` の公開鍵と組になっている秘密鍵か)。タグはそのままで［Re-run failed jobs］ |
 | publish で止まる | 下書きが残っていれば消してから［Re-run failed jobs］: `gh release list -R mtenma/claude-term` → `gh release delete v0.1.10 -R mtenma/claude-term --yes`(タグは消さない) |
-| **公開した後で問題が見つかった** | その版の番号は二度と使いません。広がりを止めるには、前の Latest に戻すか、その版の `latest-mac.json` を消します: `gh release delete-asset v0.1.10 latest-mac.json -R mtenma/claude-term --yes`(Latest に `latest-mac.json` が無いと、アプリは何も出しません)。直した版を新しい番号で出します |
+| **公開した後で問題が見つかった** | その版の番号は二度と使いません。広がりを止めるには、前の版を Latest に戻すか(`gh release edit v<前の版> -R mtenma/claude-term --latest`)、その版の `latest-mac.json` を消します(`gh release delete-asset v0.1.10 latest-mac.json -R mtenma/claude-term --yes`)。Latest に `latest-mac.json` が無いと、アプリは何も出しません。直した版を新しい番号で出します |
+| 新しい版が起動しない | 前の版が `~/Library/Application Support/Claude Term/updates/<版>/previous/Claude Term.app` に残っていれば、Finder(⌘⇧G でその場所へ移動)で「アプリケーション」フォルダへ戻します。残っていなければ(新しい版が一度起動すると消えます)、前の版の DMG を `https://github.com/mtenma/claude-term/releases/download/v<前の版>/Claude-Term-<前の版>-arm64.dmg` から入れます(7.) |
+| ダウンロード中に ⌘Q を押し、終了の確認で［キャンセル］した | ダウンロードはやめ、お知らせの窓も閉じたままになります。次に起動したときに、もう一度お知らせが出ます |
 | 利用者の Mac で「更新できませんでした」 | お知らせの窓の文を見ます。「この場所のアプリは自動で入れ替えられません」なら、「アプリケーション」フォルダに置いて開き直すか、DMG で手で入れます(7.)。「ほかにも Claude Term が起動しています」なら、ほかを終了します |
 | お知らせが出ない | その Mac のブラウザで https://github.com/mtenma/claude-term/releases/latest/download/latest-mac.json が開けるか。開けなければ、お知らせも出ません(ターミナルはそのまま使えます)。`npm start` の開発版は確かめません |
 | 更新のあと、フォルダへのアクセスなどを聞かれる | ［許可］を押します。ad-hoc 署名のため、版が変わると聞き直されることがあります。フルディスクアクセスなどは、黙って外れることがあるので、［システム設定］→［プライバシーとセキュリティ］で入れ直します |

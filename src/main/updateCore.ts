@@ -148,6 +148,8 @@ export interface DownloadOptions {
 /** zip を dest に書く。大きさと SHA-256 は読みながら確かめ、size を超えたらその場で止める */
 export async function downloadZip(fetchFn: FetchLike, release: UpdateRelease, dest: string,
   opts: DownloadOptions): Promise<void> {
+  // 中止済みの signal には abort の知らせが来ないので、始める前に見る
+  if (opts.signal.aborted) throw new UpdateError('cancelled')
   const ctl = new AbortController()
   const abort = () => ctl.abort()
   opts.signal.addEventListener('abort', abort)
@@ -220,7 +222,9 @@ export function checkInstallable(appPath: string, updatesDir: string): void {
   try {
     fs.renameSync(probe, beside)
     fs.renameSync(beside, probe)
-  } catch {
+  } catch (error) {
+    // アプリケーションフォルダに置いていても、ユーザーデータと別のディスクなら入れ替えられない(案内の文を分ける)
+    if ((error as NodeJS.ErrnoException).code === 'EXDEV') throw new UpdateError('other_volume', appPath)
     throw fail()
   } finally {
     for (const dir of [beside, probe]) {

@@ -127,7 +127,8 @@ export type UsageEvent =
 export type UpdatePhase = 'ready' | 'preparing' | 'downloading' | 'verifying' | 'quitting' | 'error'
 
 export type UpdateErrorCode =
-  | 'location' | 'other_instance' | 'disk_space' | 'network' | 'corrupt' | 'invalid_app' | 'quit_failed' | 'internal'
+  | 'location' | 'other_volume' | 'other_instance' | 'disk_space' | 'network' | 'corrupt' | 'invalid_app'
+  | 'quit_failed' | 'internal'
 
 /**
  * 前回の更新で入れ替えられなかった理由(次の起動で知らせる)。

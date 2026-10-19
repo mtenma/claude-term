@@ -71,6 +71,8 @@ interface Hooks {
   liveSessions: () => number
   /** 「実行中のセッションがあります」の確認を省き、app.quit() で閉じられるようにする */
   allowQuit: () => void
+  /** 終了が取り消されたときに、閉じる確認を元に戻す */
+  restoreQuitGuard: () => void
 }
 
 interface QuitPlan {
@@ -90,6 +92,8 @@ let quitPlan: QuitPlan | null = null
 let quitWatch: NodeJS.Timeout | null = null
 /** ⌘Q などで、処理中でも窓を閉じてよいとき */
 let allowClose = false
+/** 利用者が終了を始めた(⌘Q など)。準備の途中でも、更新のための終了には進まない */
+let quitRequested = false
 let updateSession: Session | null = null
 
 const identity = (): AppIdentity => testConfig ?? PRODUCTION
@@ -132,8 +136,10 @@ function settlePreviousUpdate(): {had: boolean; failure: UpdateFailure | null} {
   const dir = updatesDir()
   const pending = readPending(dir)
   let failure: UpdateFailure | null = null
-  if (pending === 'broken') failure = 'unknown'
-  else if (pending && isNewer(pending.to, app.getVersion())) failure = pending.failure ?? 'unknown'
+  // 読めない記録は、片付けて進む(知らせる中身が無い)
+  if (pending !== null && pending !== 'broken' && isNewer(pending.to, app.getVersion())) {
+    failure = pending.failure ?? 'unknown'
+  }
   const running = appBundleOf(process.execPath)
   if (!cleanUpdates(dir, running)) {
     // 入れ替えに失敗して元の場所にも戻せず、退避した場所から開いている
@@ -160,11 +166,18 @@ export function startAppUpdates(h: Hooks): void {
     return
   }
   if (previous.failure === 'stranded') {
+    const running = appBundleOf(process.execPath)
     void dialog.showMessageBox({
       type: 'warning',
       message: 'Claude Term を元の場所に戻せませんでした',
-      detail: `前回の更新で入れ替えに失敗しました。今は ${tildify(appBundleOf(process.execPath))} から開いています。` +
+      detail: `前回の更新で入れ替えに失敗しました。今は ${tildify(running)} から開いています。` +
         'Claude Term を終了してから、Finder でこのアプリを「アプリケーション」フォルダへ移してください。',
+      buttons: ['Finder で表示', '閉じる'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then((r) => {
+      // 退避先は ~/Library の下で、Finder では既定で見えないので、場所を開いて見せる
+      if (r.response === 0) shell.showItemInFolder(running)
     })
     return
   }
@@ -218,7 +231,7 @@ function setView(patch: Partial<UpdateView>): void {
 function openWindow(): BrowserWindow {
   if (win && !win.isDestroyed()) return win
   const appearance = getAppearance()
-  // ターミナルで打っている最中に、キー入力を奪わないように前に出すだけにする
+  // ターミナルで打っている最中や、ほかのアプリを使っている最中に、キー入力を奪わないように前に出すだけにする
   const terminal = BrowserWindow.getFocusedWindow()
   const created = new BrowserWindow({
     width: 520,
@@ -244,8 +257,13 @@ function openWindow(): BrowserWindow {
     created.setPosition(Math.round(t.x + (t.width - w) / 2), Math.round(t.y + (t.height - h) / 2))
   }
   created.once('ready-to-show', () => {
-    if (terminal && !terminal.isDestroyed() && terminal.isFocused() && !testConfig) created.showInactive()
-    else created.show()
+    if (testConfig) {
+      created.show()
+    } else {
+      created.showInactive()
+      // ほかのアプリを使っているときは、Dock のアイコンを 1 回跳ねさせて知らせる
+      if (!terminal) app.dock?.bounce('informational')
+    }
     if (testConfig?.autoStart) void start()
   })
   created.on('close', (e) => {
@@ -297,12 +315,18 @@ async function start(): Promise<void> {
   const ctl = new AbortController()
   job = ctl
   allowClose = false
+  quitRequested = false
   setView({phase: 'preparing', error: null, errorDetail: '', received: 0})
   const dir = path.join(updatesDir(), target.version)
+  // ［中止］・⌘Q は、待ちの合間に来る。待ちのたびに見直す
+  const stopIfCancelled = () => {
+    if (ctl.signal.aborted || quitRequested) throw new UpdateError('cancelled')
+  }
   try {
     const current = appBundleOf(process.execPath)
     checkInstallable(current, updatesDir())
     await ensureNoOtherInstance()
+    stopIfCancelled()
     fs.rmSync(dir, {recursive: true, force: true})
     fs.mkdirSync(dir, {recursive: true, mode: 0o700})
     checkDiskSpace(dir, target.size)
@@ -320,13 +344,15 @@ async function start(): Promise<void> {
         }
       },
     })
+    stopIfCancelled()
     setView({phase: 'verifying'})
     const next = await extractApp(zip, dir, target, identity())
     fs.rmSync(zip, {force: true})
-    if (ctl.signal.aborted) throw new UpdateError('cancelled')
+    stopIfCancelled()
     // ダウンロードの間に状況が変わっていないか、終了の前にもう一度確かめる
     checkInstallable(current, updatesDir())
     await ensureNoOtherInstance()
+    stopIfCancelled()
     beginQuit({
       current, next, backup: path.join(dir, 'previous', path.basename(current)),
       from: app.getVersion(), to: target.version,
@@ -342,7 +368,8 @@ async function start(): Promise<void> {
     console.warn('[update] 更新できませんでした:', code, message(error))
     setView({
       phase: 'error', error: code,
-      errorDetail: code === 'location' ? tildify(message(error)) : code === 'disk_space' ? message(error) : '',
+      errorDetail: code === 'location' || code === 'other_volume' ? tildify(message(error))
+        : code === 'disk_space' ? message(error) : '',
     })
   }
 }
@@ -361,6 +388,8 @@ function beginQuit(plan: QuitPlan): void {
     removePending(updatesDir())
     fs.rmSync(path.dirname(plan.backup), {recursive: true, force: true})
     fs.rmSync(path.dirname(plan.next), {recursive: true, force: true})
+    // 終了しなかったので、閉じる確認を元に戻す(実行中のセッションを確認なしで閉じないように)
+    hooks?.restoreQuitGuard()
     if (!win || win.isDestroyed()) openWindow()
     setView({phase: 'error', error: 'quit_failed', errorDetail: ''})
   }, QUIT_WATCH_MS)
@@ -379,9 +408,14 @@ export async function finishUpdateOnQuit(): Promise<void> {
   try {
     const result = swapApp(plan.current, plan.next, plan.backup)
     if (!result.ok) {
-      writePending(updatesDir(), {
-        from: plan.from, to: plan.to, at: Date.now(), failure: result.restored ? 'swap_failed' : 'stranded',
-      })
+      try {
+        writePending(updatesDir(), {
+          from: plan.from, to: plan.to, at: Date.now(), failure: result.restored ? 'swap_failed' : 'stranded',
+        })
+      } catch (error) {
+        // 記録を書けなくても(空き容量など)、開き直しは必ず頼む
+        console.warn('[update] 結果を記録できませんでした:', message(error))
+      }
       if (!result.restored) open = plan.backup
       console.warn('[update] 入れ替えられませんでした:', result.reason)
       if (!testConfig) {
@@ -427,8 +461,10 @@ export function registerUpdateIpc(): void {
     if (fromUpdateWindow(event)) void shell.openExternal(RELEASES_PAGE)
   })
   app.on('before-quit', () => {
-    // ⌘Q: 処理中ならダウンロードをやめ、窓が終了を止めないようにする(更新のための終了はそのまま)
+    // ⌘Q: 処理中ならダウンロードをやめ、窓が終了を止めないようにする(更新のための終了はそのまま)。
+    // 準備の最後の待ちの間に来ても、更新のための終了へ進まないよう印を残す
     if (quitPlan) return
+    quitRequested = true
     allowClose = true
     job?.abort()
   })

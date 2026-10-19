@@ -1,7 +1,7 @@
 import './update.css'
 import type {AppearanceSettings, UpdateErrorCode, UpdateFailure, UpdatePhase, UpdateView} from '../shared/types'
 import type {ClaudeTermUpdateApi} from '../preload/updatePreload'
-import {isLightColor} from './color'
+import {isLightColor, textColorOn} from './color'
 
 // アップデートのお知らせの窓。状態は main だけが持ち、この画面は届いた状態を映すだけ
 
@@ -15,6 +15,8 @@ const api = window.claudeTermUpdate
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 /** 窓が焦点を得てから、この時間の Enter・Space・Esc は無視する(ターミナルで打っていた続きで押さないように) */
 const KEY_GUARD_MS = 700
+/** 主ボタンは［今すぐ更新］と［中止］が同じ位置で入れ替わるので、替わってからこの時間は押せなくする(二度押し) */
+const SWAP_GUARD_MS = 500
 
 const BUSY: readonly UpdatePhase[] = ['preparing', 'downloading', 'verifying', 'quitting']
 const STEP: Partial<Record<UpdatePhase, string>> = {
@@ -26,6 +28,8 @@ const STEP: Partial<Record<UpdatePhase, string>> = {
 const ERROR_TEXT: Record<UpdateErrorCode, (detail: string) => string> = {
   location: (detail) => `この場所（${detail}）のアプリは自動で入れ替えられません。` +
     '「アプリケーション」フォルダに置いて開き直すか、リリースのページから DMG で入れ替えてください。',
+  other_volume: (detail) => `アプリ（${detail}）とユーザーデータが別のディスクにあるため、自動で入れ替えられません。` +
+    'リリースのページから DMG で入れ替えてください。',
   other_instance: () => 'ほかにも Claude Term が起動しています。終了してからもう一度押してください。',
   disk_space: (detail) => `空き容量が足りません（約 ${detail} MB 必要です）。空きを作ってから、もう一度押してください。`,
   network: () => 'ダウンロードできませんでした。インターネットの接続を確かめて、もう一度押してください。',
@@ -35,9 +39,10 @@ const ERROR_TEXT: Record<UpdateErrorCode, (detail: string) => string> = {
   internal: () => '更新できませんでした。時間をおいてもう一度お試しください。',
 }
 /** 押し直しても直らない失敗は、リリースのページへ案内する */
-const NOT_RETRYABLE: readonly UpdateErrorCode[] = ['location', 'invalid_app']
+const NOT_RETRYABLE: readonly UpdateErrorCode[] = ['location', 'other_volume', 'invalid_app']
 const PREVIOUS_TEXT: Record<UpdateFailure, string> = {
-  swap_failed: '前回の更新では入れ替えられず、今のバージョンのまま開きました。',
+  swap_failed: '前回の更新では入れ替えられず、今のバージョンのまま開きました。' +
+    'もう一度試しても同じときは、リリースのページから DMG で入れ替えてください。',
   stranded: '前回の更新では入れ替えられませんでした。',
   unknown: '前回の更新は完了しませんでした。',
 }
@@ -53,7 +58,7 @@ function applyAppearance(a: AppearanceSettings): void {
   root.style.setProperty('--bg', a.background)
   root.style.setProperty('--text', a.foreground)
   root.style.setProperty('--accent', a.accent)
-  root.style.setProperty('--on-accent', isLightColor(a.accent) ? '#000000' : '#ffffff')
+  root.style.setProperty('--on-accent', textColorOn(a.accent))
   root.dataset.theme = isLightColor(a.background) ? 'light' : 'dark'
 }
 
@@ -62,7 +67,17 @@ const mb = (bytes: number): string => {
   return value < 10 ? value.toFixed(1) : String(Math.round(value))
 }
 
+/** 値が変わったときだけ書き直す(進み具合のたびに書き直すと、文字の選択や読み上げの位置が戻る) */
+function setText(id: string, text: string): void {
+  const node = el(id)
+  if (node.textContent !== text) node.textContent = text
+}
+
+let shownSessions: number | null = null
+
 function renderCaution(sessions: number): void {
+  if (sessions === shownSessions) return
+  shownSessions = sessions
   const box = el('caution')
   box.textContent = '更新すると Claude Term を終了し、新しいバージョンで開き直します。'
   if (sessions === 0) {
@@ -82,12 +97,12 @@ function render(next: UpdateView): void {
   const wasBusy = lastPhase !== null && BUSY.includes(lastPhase)
   const phaseChanged = next.phase !== lastPhase
 
-  el('version').textContent = `新しいバージョン ${next.version}（今は ${next.current}）`
-  el('notes').textContent = next.notes.trim() || '（変更の内容の記載はありません）'
+  setText('version', `新しいバージョン ${next.version}（今は ${next.current}）`)
+  setText('notes', next.notes.trim() || '（変更の内容の記載はありません）')
   renderCaution(next.sessions)
   const previous = el('previous')
   previous.hidden = next.previousFailure === null
-  previous.textContent = next.previousFailure ? PREVIOUS_TEXT[next.previousFailure] : ''
+  setText('previous', next.previousFailure ? PREVIOUS_TEXT[next.previousFailure] : '')
 
   el('progress-box').hidden = !busy
   // 読み上げは段の切り替わりだけ(% が変わるたびに読ませない)
@@ -104,7 +119,7 @@ function render(next: UpdateView): void {
 
   const error = el('error')
   error.hidden = next.phase !== 'error' || next.error === null
-  error.textContent = next.phase === 'error' && next.error ? ERROR_TEXT[next.error](next.errorDetail) : ''
+  setText('error', next.phase === 'error' && next.error ? ERROR_TEXT[next.error](next.errorDetail) : '')
 
   const later = el<HTMLButtonElement>('later')
   const primary = el<HTMLButtonElement>('primary')
@@ -118,6 +133,13 @@ function render(next: UpdateView): void {
   } else {
     primary.textContent = '中止'
     primary.disabled = next.phase === 'quitting'
+  }
+  if (phaseChanged && !primary.disabled) {
+    primary.disabled = true
+    const phase = next.phase
+    setTimeout(() => {
+      if (view?.phase === phase) primary.disabled = phase === 'quitting'
+    }, SWAP_GUARD_MS)
   }
 
   // 押せなくしたボタンから焦点が body へ落ちないように、進み具合の枠へ移す。終わったら［あとで］へ戻す
