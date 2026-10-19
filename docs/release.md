@@ -86,7 +86,7 @@ gh api repos/mtenma/claude-term/environments/release/deployment-branch-policies 
 
 ### 1.5 試しのビルド
 
-`release.yml` が main に入ってから行えます(GitHub は、既定のブランチにある workflow だけを［Run workflow］で動かせます)。
+`release.yml` が main に入ってから行えます(GitHub は、既定のブランチにある workflow だけを［Run workflow］で動かせます)。試しのビルドも `package.json` の版の変更の内容(`docs/releases/<版>.txt`)を確かめるので、2.2 の 2・3(版を上げる、変更の内容を書く)を済ませて main に入れてから流します。
 
 - 画面: https://github.com/mtenma/claude-term/actions/workflows/release.yml →［Run workflow］→ Branch は `main` →［Run workflow］
 - ターミナル: `gh workflow run release.yml -R mtenma/claude-term --ref main`
